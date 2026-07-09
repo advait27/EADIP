@@ -1,0 +1,36 @@
+replicaCount: 2
+
+image:
+  repository: eadip-gateway
+  tag: "dev"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+ingress:
+  enabled: true
+  className: nginx
+  host: eadip.staging.local
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+# Autoscaling target for the gateway (HPA) — TAD §16.1.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+env:
+  EADIP_ENVIRONMENT: staging
+  EADIP_LOG_JSON: "true"
+  EADIP_OTEL_ENABLED: "true"

@@ -1,0 +1,48 @@
+# Point-in-time restore Job (Phase 12, DR: RTO <= 1hr).
+#
+# Applied by the DR runbook (step "Restore"). Fetches the latest base backup and
+# replays archived WAL to the chosen recovery target. The whole path — provision
+# volume, fetch, replay, promote — is IaC (this manifest + the Helm chart), so
+# recovery is a `kubectl apply`, not a manual rebuild. Rehearsed quarterly in
+# the game-day (see docs/runbooks/disaster-recovery.md).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: eadip-postgres-restore
+  labels:
+    app.kubernetes.io/part-of: eadip
+spec:
+  backoffLimit: 0 # restores are supervised; do not retry blindly
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: wal-g-restore
+          image: ghcr.io/wal-g/wal-g:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -euo pipefail
+              wal-g backup-fetch /var/lib/postgresql/data LATEST
+              # PITR: replay archived WAL up to the recovery target (default:
+              # end of archive). Override via RECOVERY_TARGET_TIME for a
+              # point-in-time restore, e.g. just before an incident.
+              touch /var/lib/postgresql/data/recovery.signal
+              cat > /var/lib/postgresql/data/postgresql.auto.conf <<EOF
+              restore_command = 'wal-g wal-fetch %f %p'
+              ${RECOVERY_TARGET_TIME:+recovery_target_time = '$RECOVERY_TARGET_TIME'}
+              EOF
+          env:
+            - name: RECOVERY_TARGET_TIME
+              value: "" # optional: "2026-07-09 12:00:00+00"
+          envFrom:
+            - secretRef:
+                name: eadip-walg-credentials
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: pgdata
+          persistentVolumeClaim:
+            claimName: eadip-postgres-data-restore

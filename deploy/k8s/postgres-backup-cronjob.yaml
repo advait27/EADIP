@@ -1,0 +1,73 @@
+# Postgres continuous-protection jobs (Phase 12, DR: RPO <= 5min).
+#
+# Two mechanisms, per the DR runbook (docs/runbooks/disaster-recovery.md):
+#   1. Continuous WAL archiving (RPO): the database ships every WAL segment to
+#      object storage via wal-g. `archive_timeout=60s` forces a segment at least
+#      once a minute, so the worst-case data loss window is ~1min << 5min RPO.
+#      (Set in the Postgres config/values, shown here for completeness:
+#         archive_mode = on
+#         archive_timeout = 60s
+#         archive_command = 'wal-g wal-push %p')
+#   2. A base backup every 6h (bounds restore/replay time for the 1h RTO).
+#
+# Cross-AZ: the object-storage bucket is region-replicated; a standby cluster in
+# the paired region replays WAL continuously (warm standby). See the runbook.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: eadip-postgres-basebackup
+  labels:
+    app.kubernetes.io/part-of: eadip
+spec:
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: wal-g-basebackup
+              image: ghcr.io/wal-g/wal-g:latest
+              command: ["wal-g", "backup-push", "/var/lib/postgresql/data"]
+              envFrom:
+                - secretRef:
+                    name: eadip-walg-credentials # WALG_S3_PREFIX, AWS_* (vault-synced)
+              volumeMounts:
+                - name: pgdata
+                  mountPath: /var/lib/postgresql/data
+                  readOnly: true
+          volumes:
+            - name: pgdata
+              persistentVolumeClaim:
+                claimName: eadip-postgres-data
+---
+# Retention sweep (GDPR storage limitation): nightly, applies the configured
+# retention windows via `eadip-retention --apply` (audit is never swept).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: eadip-retention-sweep
+  labels:
+    app.kubernetes.io/part-of: eadip
+spec:
+  schedule: "30 2 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: retention
+              image: eadip-gateway:latest # same image; CLI entrypoint
+              command: ["eadip-retention", "--apply"]
+              env:
+                - name: EADIP_DATABASE_ENABLED
+                  value: "true"
+              envFrom:
+                - secretRef:
+                    name: eadip-database-credentials

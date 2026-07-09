@@ -1,0 +1,107 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "eadip"
+version = "0.1.0"
+description = "Enterprise Autonomous Decision Intelligence Platform (EADIP)"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "Proprietary" }
+authors = [{ name = "EADIP Engineering" }]
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "pydantic>=2.9",
+  "pydantic-settings>=2.5",
+  "sse-starlette>=2.1",
+  "structlog>=24.4",
+  "httpx>=0.27",
+  "litellm>=1.50",
+  "pyjwt[crypto]>=2.9",
+  "asyncpg>=0.30",
+  # Pure-Python SQL parser. Core (not an extra) so the NL->SQL safety gate
+  # (analytics.sql_validator) is always importable and always unit-tested.
+  "sqlglot>=25.0",
+]
+
+[project.optional-dependencies]
+# OpenTelemetry is optional: observability/otel.py no-ops cleanly when absent,
+# so local dev and unit tests don't require a collector or these libs.
+otel = [
+  "opentelemetry-sdk>=1.27",
+  "opentelemetry-api>=1.27",
+  "opentelemetry-instrumentation-fastapi>=0.48b0",
+  "opentelemetry-exporter-otlp-proto-grpc>=1.27",
+]
+# Data-plane backends + document parsers (Phase 3). All lazily imported, so the
+# default in-memory/hash path needs none of these.
+data = [
+  "qdrant-client>=1.12",
+  "redis>=5.0",
+  "pypdf>=5.0",
+  "python-docx>=1.1",
+  "openpyxl>=3.1",
+  # In-process analytical engine for NL->SQL execution (Phase 5, TAD Ch 8.1).
+  # Lazily imported by adapters.duckdb_warehouse; the safety gate needs no engine.
+  "duckdb>=1.1",
+]
+# Knowledge-graph backend (Phase 10, GraphRAG). Lazily imported by
+# adapters.neo4j_graph; the in-memory reference graph needs none of these.
+graph = [
+  "neo4j>=5.24",
+]
+dev = [
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "ruff>=0.6",
+  "mypy>=1.11",
+  "pre-commit>=3.8",
+  # Security gates (Phase 12, SEC-10): SAST + dependency audit, run in CI as
+  # blocking steps (`make security`).
+  "bandit>=1.7",
+  "pip-audit>=2.7",
+]
+
+[project.scripts]
+eadip-eval = "eadip.eval.run_eval:main"
+eadip-safety = "eadip.eval.safety:main"
+eadip-reliability = "eadip.eval.reliability:main"
+eadip-load = "eadip.eval.load:main"
+eadip-retention = "eadip.platform.retention:main"
+eadip-migrate = "eadip.adapters.migrations:main"
+eadip-ingest = "eadip.ingestion.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/eadip"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+# Pragmatic-strict for Phase 1; ratcheted toward full `--strict` in P1-10 hardening.
+python_version = "3.13"
+files = ["src/eadip"]
+ignore_missing_imports = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.bandit]
+# SAST gate (Phase 12, SEC-10) over the product source. B101 (assert) is used
+# for mypy narrowing in the engine; tests are pytest-idiomatic and excluded.
+targets = ["src"]
+skips = ["B101"]

@@ -1,0 +1,71 @@
+# Local dev stack (P1-4). Brings up the gateway + the four stores EADIP uses,
+# plus an OTel collector so traces are visible end-to-end.
+services:
+  gateway:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      EADIP_ENVIRONMENT: dev
+      EADIP_LOG_JSON: "true"
+      EADIP_OTEL_ENABLED: "true"
+      EADIP_OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      EADIP_POSTGRES_DSN: "postgresql://eadip:eadip@postgres:5432/eadip"
+      EADIP_REDIS_URL: "redis://redis:6379/0"
+      EADIP_QDRANT_URL: "http://qdrant:6333"
+      EADIP_NEO4J_URI: "bolt://neo4j:7687"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: eadip
+      POSTGRES_PASSWORD: eadip
+      POSTGRES_DB: eadip
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eadip"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+
+  neo4j:
+    image: neo4j:5
+    environment:
+      NEO4J_AUTH: "neo4j/eadippass"
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+
+  otel-collector:
+    image: otel/opentelemetry-collector:latest
+    command: ["--config=/etc/otel/collector-config.yaml"]
+    volumes:
+      - ./deploy/otel/collector-config.yaml:/etc/otel/collector-config.yaml:ro
+    ports:
+      - "4317:4317"

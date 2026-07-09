@@ -1,0 +1,34 @@
+# KEDA autoscaling for the EADIP gateway (Phase 11, NFR-13, TAD Ch 10).
+#
+# Two triggers:
+#   - CPU keeps the interactive API responsive under load.
+#   - The Redis list trigger partitions the ingestion queue: each tenant's
+#     ingestion jobs land on a per-tenant-shard list (eadip:ingest:<shard>), and
+#     workers scale with queue depth so one tenant's bulk upload cannot starve
+#     another's (queue partitioning + backpressure end-to-end: the gateway sheds
+#     with 429 per tenant, the queue absorbs bursts, KEDA adds workers).
+#
+# Requires KEDA installed in the cluster (https://keda.sh). Names match the
+# Helm chart's fullname with the default release name `eadip`.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: eadip-gateway
+  labels:
+    app.kubernetes.io/part-of: eadip
+spec:
+  scaleTargetRef:
+    name: eadip
+  minReplicaCount: 2
+  maxReplicaCount: 12
+  cooldownPeriod: 120
+  triggers:
+    - type: cpu
+      metricType: Utilization
+      metadata:
+        value: "70"
+    - type: redis
+      metadata:
+        addressFromEnv: EADIP_REDIS_URL
+        listName: eadip:ingest:shard-0
+        listLength: "50"

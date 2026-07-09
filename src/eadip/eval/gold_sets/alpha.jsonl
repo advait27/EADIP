@@ -1,0 +1,6 @@
+{"id": "a1", "question": "Why did EMEA gross margin fall last quarter?", "expected": "margin|emea|hardware"}
+{"id": "a2", "question": "What drove the change in AMER gross margin?", "expected": "margin|amer"}
+{"id": "a3", "question": "Explain the APAC gross margin movement and its product-line drivers.", "expected": "margin|apac|driver"}
+{"id": "a4", "question": "Why did EMEA margin move, and what were the product-line drivers?", "expected": "margin|driver|hardware"}
+{"id": "a5", "question": "Why did EMEA gross margin fall, including the EUR currency exchange rate effect?", "expected": "margin|emea|fx_rate|currency"}
+{"id": "a6", "question": "Why did gross margin fall — trace the metric lineage and the event that drove it.", "expected": "margin|event|cogs|derived from"}

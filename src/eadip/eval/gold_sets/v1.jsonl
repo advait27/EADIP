@@ -1,0 +1,5 @@
+{"id": "g1", "question": "Why did EMEA margin fall last quarter?", "expected": "margin|emea"}
+{"id": "g2", "question": "Which suppliers are becoming risky this month?", "expected": "suppliers|risky"}
+{"id": "g3", "question": "What should leadership prioritize this week?", "expected": "prioritize|leadership"}
+{"id": "g4", "question": "What drove the revenue decrease in Q2?", "expected": "revenue|decrease"}
+{"id": "g5", "question": "Which customer segment has the highest churn?", "expected": "churn|segment"}
