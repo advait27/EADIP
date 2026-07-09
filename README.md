@@ -312,3 +312,7 @@ model seam; structlog + OpenTelemetry; pytest/ruff/mypy/bandit.
 - Secrets via vault references in production — `.env` is local-dev only.
 - Every phase ends verified GREEN (all gates), demoed live, and documented in
   an ADR before the next begins.
+
+## License
+
+[MIT](LICENSE)
