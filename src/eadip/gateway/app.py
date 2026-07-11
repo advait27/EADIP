@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
 
 from eadip.config.settings import get_settings
 from eadip.gateway.middleware import RequestIdMiddleware
@@ -50,6 +51,12 @@ def create_app() -> FastAPI:
     if settings.rate_limit_enabled:
         # Outermost-added runs first: shed excess load before any work happens.
         app.add_middleware(RateLimitMiddleware, limiter=build_rate_limiter(settings))
+
+    @app.get("/", include_in_schema=False)
+    async def root() -> RedirectResponse:
+        # A browser landing on the bare host should find the API, not a 404.
+        return RedirectResponse(url="/docs")
+
     app.include_router(health.router)
     app.include_router(runs.router)
     app.include_router(search.router)
