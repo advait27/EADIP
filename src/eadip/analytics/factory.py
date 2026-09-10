@@ -22,9 +22,12 @@ def build_generator(settings: Settings) -> SqlGenerator:
     if settings.sql_generator_backend == "llm":
         from eadip.adapters.litellm_client import LiteLLMClient
         from eadip.analytics.sql_generator import LLMSqlGenerator
+        from eadip.platform.factory import build_routing_policy
+        from eadip.platform.models import TaskKind
 
         client = LiteLLMClient(settings.default_model, settings.model_api_base)
-        return LLMSqlGenerator(client, settings.default_model)
+        model = build_routing_policy(settings).route(TaskKind.SQL_GENERATE).model
+        return LLMSqlGenerator(client, model)
     return TemplateSqlGenerator()
 
 

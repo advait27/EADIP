@@ -10,7 +10,7 @@ from fastapi.responses import RedirectResponse
 
 from eadip.config.settings import get_settings
 from eadip.gateway.middleware import RequestIdMiddleware
-from eadip.gateway.routes import admin, analytics, health, runs, search, tools
+from eadip.gateway.routes import admin, analytics, health, runs, search, share, tools
 from eadip.observability.logging import configure_logging, get_logger
 from eadip.observability.otel import setup_telemetry
 from eadip.platform.factory import build_rate_limiter, seed_default_prompts
@@ -66,6 +66,7 @@ def create_app() -> FastAPI:
     app.include_router(search.router)
     app.include_router(analytics.router)
     app.include_router(tools.router)
+    app.include_router(share.router)
     app.include_router(admin.router)
 
     setup_telemetry(

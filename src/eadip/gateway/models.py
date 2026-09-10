@@ -99,6 +99,58 @@ class AnalyzeResponse(BaseModel):
     warnings: list[str]
 
 
+class ClaimCounts(BaseModel):
+    verified: int = 0
+    unverified: int = 0
+    conflicting: int = 0
+
+
+class RunStatusResponse(BaseModel):
+    """Where a run is right now (Glass Box): enough for a UI to render after a
+    refresh without opening the stream."""
+
+    id: UUID
+    question: str
+    status: str
+    running: bool  # executing in this process right now
+    iterations: int
+    cost_usd: float
+    elapsed_s: float
+    stop_reason: str | None = None
+    findings: int
+    claims: ClaimCounts
+    pending_approvals: int
+    has_brief: bool
+    last_seq: int  # head of the event log (use as Last-Event-ID)
+
+
+class TimelineResponse(BaseModel):
+    run_id: UUID
+    question: str
+    status: str
+    events: list[dict]  # serialised LoggedEvent: seq, at, type, data
+
+
+class ShareResponse(BaseModel):
+    token: str
+    url: str  # the replay page (UI when built, else the API payload)
+    api_url: str
+    expires_at: datetime
+
+
+class SharePayload(BaseModel):
+    """A read-only replay of a run for anyone holding the link."""
+
+    run_id: UUID
+    question: str
+    status: str
+    expires_at: datetime
+    timeline: list[dict]
+    graph: dict
+    brief: dict | None = None
+    evidence_bundle_url: str
+
+
 class ReportResponse(BaseModel):
     """The verified executive brief for a run (Phase 7, EXP-01..06)."""
 

@@ -41,6 +41,9 @@ class QueryPlan:
     period_in: tuple[str, tuple[str, ...]] | None = None  # (column, allowed values)
     order_by: tuple[tuple[str, str], ...] = ()  # (column, "ASC" | "DESC")
     limit: int | None = None
+    # False renders a plain row projection (no GROUP BY) — used for the evidence
+    # bundle, where duplicate source rows must survive so client-side SUMs agree.
+    group_by: bool = True
 
 
 @dataclass(frozen=True)

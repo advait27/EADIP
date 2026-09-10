@@ -65,7 +65,7 @@ class TemplateSqlGenerator:
             where.append(f"{col} IN ({joined})")
         sql.append("WHERE " + " AND ".join(where))
 
-        if plan.dimensions:
+        if plan.dimensions and plan.group_by:
             sql.append("GROUP BY " + ", ".join(plan.dimensions))
         if plan.order_by:
             sql.append("ORDER BY " + ", ".join(f"{c} {d}" for c, d in plan.order_by))

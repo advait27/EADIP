@@ -71,15 +71,65 @@ class HeuristicRecommender:
         return recs
 
 
+RECOMMENDER_INSTRUCTION = (
+    "Propose concrete actions from the VERIFIED, non-association claims only. "
+    'Reply JSON {"recommendations":[{"action","rationale","impact","confidence","based_on"}]} '
+    "where based_on lists the exact claim texts used. Never act on a conflicting, "
+    "unverified or correlation-only claim."
+)
+
+
 class LLMRecommender:
+    """Model-phrased actions, hard-grounded: every recommendation must cite at
+    least one verified non-association claim (by exact text) or it is dropped;
+    impact/confidence are clamped to what the cited claims support. Any model
+    failure or an empty grounded set falls back to the heuristic."""
+
     def __init__(
         self, client: object, model: str | None = None, max_recommendations: int = 5
     ) -> None:
         self._client = client
         self._model = model
+        self._max = max_recommendations
         self._fallback = HeuristicRecommender(max_recommendations)
 
     async def recommend(self, objective: str, claims: list[VerifiedClaim]) -> list[Recommendation]:
-        # A model could phrase richer actions here; for now defer to the heuristic
-        # so recommendations remain deterministic and grounded in verified claims.
-        return await self._fallback.recommend(objective, claims)
+        from eadip.agents.llm import complete_json
+
+        eligible = {
+            c.claim: c
+            for c in claims
+            if c.status == VerificationStatus.VERIFIED and not c.association_only
+        }
+        if not eligible:
+            return await self._fallback.recommend(objective, claims)
+        prompt = (
+            f"{RECOMMENDER_INSTRUCTION}\nObjective: {objective}\nVerified claims: {list(eligible)}"
+        )
+
+        def validate(data: dict) -> list[Recommendation]:
+            raw = data.get("recommendations")
+            if not isinstance(raw, list) or not raw:
+                raise ValueError("recommendations must be a non-empty list")
+            out: list[Recommendation] = []
+            for item in raw:
+                rec = Recommendation.model_validate(item)
+                cited = [c for c in rec.based_on if c in eligible]
+                if not cited:
+                    continue  # ungrounded -> dropped, never surfaced
+                support = max(eligible[c].confidence for c in cited)
+                out.append(
+                    rec.model_copy(
+                        update={
+                            "based_on": cited,
+                            "confidence": min(max(rec.confidence, 0.0), support),
+                            "impact": abs(rec.impact),
+                        }
+                    )
+                )
+            if not out:
+                raise ValueError("no recommendation cites a verified claim")
+            return out[: self._max]
+
+        recs = await complete_json(self._client, prompt, model=self._model, validate=validate)
+        return recs if recs is not None else await self._fallback.recommend(objective, claims)

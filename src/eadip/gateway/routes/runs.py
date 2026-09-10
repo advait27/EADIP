@@ -32,22 +32,29 @@ from eadip.gateway.dependencies import (
     ResidencyGuardDep,
     RunExecutorDep,
     RunRepositoryDep,
+    SettingsDep,
+    WarehouseDep,
 )
 from eadip.gateway.models import (
     ApprovalItem,
+    ClaimCounts,
     CreateRun,
     DecisionRequest,
     DecisionResponse,
     ReportResponse,
     RunResponse,
+    RunStatusResponse,
+    TimelineResponse,
 )
 from eadip.observability.logging import get_logger
 from eadip.orchestrator.executor import StartResult
+from eadip.orchestrator.graph import EvidenceGraph, build_evidence_graph
 from eadip.orchestrator.state import RunState
 from eadip.ports.events import LoggedEvent, is_terminal
 from eadip.security.audit import make_event
 from eadip.security.identity import Identity
 from eadip.security.rbac import Effect
+from eadip.verification.bundle import EvidenceBundle, build_evidence_bundle
 from eadip.verification.models import VerificationStatus
 
 router = APIRouter(prefix="/v1/runs", tags=["runs"])
@@ -191,6 +198,135 @@ async def stream_run_events(
             )
 
     return EventSourceResponse(event_generator())
+
+
+def _claim_counts(state: RunState) -> ClaimCounts:
+    claims = state.verified_claims
+    return ClaimCounts(
+        verified=sum(c.status == VerificationStatus.VERIFIED for c in claims),
+        unverified=sum(c.status == VerificationStatus.UNVERIFIED for c in claims),
+        conflicting=sum(c.status == VerificationStatus.CONFLICTING for c in claims),
+    )
+
+
+async def _load_or_404(checkpointer: CheckpointerDep, identity: Identity, run_id: UUID) -> RunState:
+    state = await checkpointer.load(identity.tenant_id, run_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return state
+
+
+@router.get("/{run_id}", name="run_status", response_model=RunStatusResponse)
+async def run_status(
+    run_id: UUID,
+    identity: RunActorDep,
+    _residency: ResidencyGuardDep,
+    checkpointer: CheckpointerDep,
+    executor: RunExecutorDep,
+    event_log: EventLogDep,
+) -> RunStatusResponse:
+    """Where the run is right now (Glass Box): status, counts and the log head,
+    so a client can render after a refresh and reconnect with Last-Event-ID."""
+    state = await _load_or_404(checkpointer, identity, run_id)
+    return RunStatusResponse(
+        id=run_id,
+        question=state.question,
+        status=str(state.status),
+        running=executor.is_running(run_id),
+        iterations=state.iterations,
+        cost_usd=round(state.cost_usd, 6),
+        elapsed_s=round(state.elapsed_s, 3),
+        stop_reason=state.stop_reason,
+        findings=len(state.findings),
+        claims=_claim_counts(state),
+        pending_approvals=len(state.open_approvals()),
+        has_brief=state.brief is not None,
+        last_seq=await event_log.last_seq(run_id),
+    )
+
+
+@router.get("/{run_id}/timeline", name="run_timeline", response_model=TimelineResponse)
+async def run_timeline(
+    run_id: UUID,
+    identity: RunActorDep,
+    _residency: ResidencyGuardDep,
+    checkpointer: CheckpointerDep,
+    event_log: EventLogDep,
+    audit: AuditLogDep,
+) -> TimelineResponse:
+    """The run's recorded events in order (Glass Box replay)."""
+    state = await _load_or_404(checkpointer, identity, run_id)
+    await audit.record(
+        make_event(
+            tenant_id=identity.tenant_id,
+            actor=str(identity.user_id),
+            action="run.timeline",
+            run_id=run_id,
+        )
+    )
+    events = await event_log.read(run_id)
+    return TimelineResponse(
+        run_id=run_id,
+        question=state.question,
+        status=str(state.status),
+        events=[e.model_dump(mode="json") for e in events],
+    )
+
+
+@router.get("/{run_id}/graph", name="run_graph", response_model=EvidenceGraph)
+async def run_graph(
+    run_id: UUID,
+    identity: RunActorDep,
+    _residency: ResidencyGuardDep,
+    checkpointer: CheckpointerDep,
+    audit: AuditLogDep,
+) -> EvidenceGraph:
+    """The run's reasoning as an evidence graph (Glass Box): goal, steps,
+    findings, claims, sources and recommendations with provenance edges."""
+    state = await _load_or_404(checkpointer, identity, run_id)
+    await audit.record(
+        make_event(
+            tenant_id=identity.tenant_id,
+            actor=str(identity.user_id),
+            action="run.graph",
+            run_id=run_id,
+        )
+    )
+    return build_evidence_graph(state)
+
+
+@router.get("/{run_id}/evidence-bundle", name="run_evidence_bundle", response_model=EvidenceBundle)
+async def run_evidence_bundle(
+    run_id: UUID,
+    identity: RunActorDep,
+    _residency: ResidencyGuardDep,
+    checkpointer: CheckpointerDep,
+    warehouse: WarehouseDep,
+    settings: SettingsDep,
+    audit: AuditLogDep,
+) -> EvidenceBundle:
+    """Verify it yourself (Glass Box): every claim's provenance SQL plus the
+    tenant's rows for the tables it reads, fetched through the same safety gate
+    the server uses, so the reader can re-run the numbers in the browser."""
+    state = await _load_or_404(checkpointer, identity, run_id)
+    bundle = await build_evidence_bundle(
+        state,
+        warehouse,
+        row_cap=settings.analytics_row_cap,
+        rel_tolerance=settings.verification_rel_tolerance,
+        timeout_s=settings.analytics_statement_timeout_s,
+        max_join_tables=settings.analytics_max_join_tables,
+    )
+    await audit.record(
+        make_event(
+            tenant_id=identity.tenant_id,
+            actor=str(identity.user_id),
+            action="run.evidence_bundle",
+            run_id=run_id,
+            detail={"claims": len(bundle.claims), "tables": [t.name for t in bundle.tables]},
+        )
+    )
+    return bundle
 
 
 @router.get("/{run_id}/report", name="run_report", response_model=ReportResponse)

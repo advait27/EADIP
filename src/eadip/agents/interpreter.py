@@ -81,10 +81,7 @@ class LLMGoalInterpreter:
 
         instruction = await resolve_instruction(self._instruction_provider, INTERPRETER_INSTRUCTION)
         prompt = f"{instruction}\nQuestion: {question}"
-        data = await complete_json(self._client, prompt, model=self._model)
-        if data is None:
-            return await self._fallback.interpret(question)
-        try:
-            return Goal.model_validate(data)
-        except Exception:  # noqa: BLE001 — bad shape -> heuristic
-            return await self._fallback.interpret(question)
+        goal = await complete_json(
+            self._client, prompt, model=self._model, validate=Goal.model_validate
+        )
+        return goal if goal is not None else await self._fallback.interpret(question)

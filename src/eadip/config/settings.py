@@ -181,6 +181,8 @@ class Settings(BaseSettings):
     # log. The in-memory log keeps the newest N runs (oldest terminal runs are
     # evicted); the Postgres adapter is the production path.
     event_log_max_runs: int = 500
+    # Share links (Glass Box): a signed, read-only, expiring replay token.
+    share_link_ttl_s: int = 7 * 24 * 3600
 
     # Feature flags (decouple deploy from release). Seed for the runtime
     # FeatureFlagService — admins flip flags at runtime via the portal (FR-057).

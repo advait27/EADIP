@@ -29,6 +29,9 @@ class VerifiedClaim(BaseModel):
     corroborating_sources: int = 0
     provenance: list[str] = Field(default_factory=list)  # SQL / source_ref pointers
     note: str = ""
+    # The finding's re-derivation recipe (Glass Box): lets a reader recompute the
+    # number from the source rows without joining back to the run's findings.
+    detail: dict = Field(default_factory=dict)
 
 
 class VerificationReport(BaseModel):

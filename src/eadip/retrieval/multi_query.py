@@ -45,9 +45,12 @@ class HeuristicQueryExpander:
 class LLMQueryExpander:
     """Ask a model for paraphrases/sub-questions (production)."""
 
-    def __init__(self, model_client: ModelClient, *, max_variants: int = 3) -> None:
+    def __init__(
+        self, model_client: ModelClient, *, max_variants: int = 3, model: str | None = None
+    ) -> None:
         self._client = model_client
         self._max = max_variants
+        self._model = model
 
     async def expand(self, text: str) -> list[str]:
         prompt = (
@@ -55,6 +58,9 @@ class LLMQueryExpander:
             f"{self._max - 1} alternative search queries, one per line. "
             f"Question: {text}"
         )
-        response = await self._client.complete(prompt)
+        try:
+            response = await self._client.complete(prompt, model=self._model)
+        except Exception:  # noqa: BLE001 — model unreachable -> original query only
+            return [text]
         variants = [text, *[line.strip("-• ").strip() for line in response.text.splitlines()]]
         return _dedupe(variants)[: self._max]

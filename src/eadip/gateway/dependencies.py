@@ -68,6 +68,7 @@ from eadip.security.audit import AuditLog
 from eadip.security.identity import Identity
 from eadip.security.policy import PolicyDecisionPoint
 from eadip.security.rbac import default_catalog
+from eadip.security.tokens import ServiceTokenIssuer
 from eadip.security.vault import EnvSecretsProvider, SecretsProvider, StaticSecretsProvider
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -95,6 +96,15 @@ def get_secrets_provider() -> SecretsProvider:
             {s.service_jwt_secret_key: "dev-insecure-service-jwt-key-do-not-use-in-prod"}
         )
     return EnvSecretsProvider()
+
+
+@lru_cache
+def get_token_issuer() -> ServiceTokenIssuer:
+    """Signs service JWTs and scoped share links with the vault-held key."""
+    s = get_settings()
+    return ServiceTokenIssuer(
+        get_secrets_provider().require(s.service_jwt_secret_key), ttl_s=s.service_jwt_ttl_s
+    )
 
 
 @lru_cache
@@ -323,6 +333,8 @@ def warm_singletons() -> None:
 
 
 RunRepositoryDep = Annotated[RunRepository, Depends(get_run_repository)]
+TokenIssuerDep = Annotated[ServiceTokenIssuer, Depends(get_token_issuer)]
+WarehouseDep = Annotated[Warehouse, Depends(get_warehouse)]
 EventLogDep = Annotated[EventLog, Depends(_event_log_dep)]
 RunExecutorDep = Annotated[RunExecutor, Depends(_run_executor_dep)]
 AuditLogDep = Annotated[AuditLog, Depends(get_audit_log)]

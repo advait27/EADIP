@@ -207,4 +207,5 @@ class VerificationService:
             corroborating_sources=corroboration,
             provenance=[e.ref for e in finding.evidence],
             note=note,
+            detail=dict(finding.detail),
         )

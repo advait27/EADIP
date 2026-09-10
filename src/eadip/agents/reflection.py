@@ -78,10 +78,9 @@ class LLMReflection:
         claims = [f.claim for f in findings]
         instruction = await resolve_instruction(self._instruction_provider, REFLECTION_INSTRUCTION)
         prompt = f"{instruction}\nGoal: {goal.model_dump_json()}\nFindings: {claims}"
-        data = await complete_json(self._client, prompt, model=self._model)
-        if data is None:
+        reflection = await complete_json(
+            self._client, prompt, model=self._model, validate=Reflection.model_validate
+        )
+        if reflection is None:
             return await self._fallback.reflect(goal, findings, step_results)
-        try:
-            return Reflection.model_validate(data)
-        except Exception:  # noqa: BLE001
-            return await self._fallback.reflect(goal, findings, step_results)
+        return reflection

@@ -151,11 +151,14 @@ class LLMPlanner:
 
         instruction = await resolve_instruction(self._instruction_provider, PLANNER_INSTRUCTION)
         prompt = f"{instruction}\nGoal: {goal.model_dump_json()}\nGaps to close: {gaps}"
-        data = await complete_json(self._client, prompt, model=self._model)
-        if data is None:
-            return await self._fallback.plan(goal, gaps)
-        try:
+
+        def validate(data: dict) -> Plan:
             plan = Plan.model_validate(data)
-        except Exception:  # noqa: BLE001
-            return await self._fallback.plan(goal, gaps)
-        return plan if plan.steps else await self._fallback.plan(goal, gaps)
+            if not plan.steps:
+                raise ValueError("plan has no steps")
+            if any(s.kind not in ("retrieve", "analyze", "tool") for s in plan.steps):
+                raise ValueError("step kind must be retrieve, analyze or tool")
+            return plan
+
+        plan = await complete_json(self._client, prompt, model=self._model, validate=validate)
+        return plan if plan is not None else await self._fallback.plan(goal, gaps)

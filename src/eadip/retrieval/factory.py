@@ -18,9 +18,14 @@ from eadip.retrieval.service import RetrievalService
 def _build_expander(settings: Settings) -> QueryExpander:
     if settings.query_expander_backend == "llm":
         from eadip.adapters.litellm_client import LiteLLMClient
+        from eadip.platform.factory import build_routing_policy
+        from eadip.platform.models import TaskKind
         from eadip.retrieval.multi_query import LLMQueryExpander
 
-        return LLMQueryExpander(LiteLLMClient(settings.default_model, settings.model_api_base))
+        model = build_routing_policy(settings).route(TaskKind.QUERY_EXPAND).model
+        return LLMQueryExpander(
+            LiteLLMClient(settings.default_model, settings.model_api_base), model=model
+        )
     return HeuristicQueryExpander()
 
 
