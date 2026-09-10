@@ -10,7 +10,8 @@ from fastapi.responses import RedirectResponse
 
 from eadip.config.settings import get_settings
 from eadip.gateway.middleware import RequestIdMiddleware
-from eadip.gateway.routes import admin, analytics, health, runs, search, share, tools
+from eadip.gateway.routes import admin, analytics, datasets, health, runs, search, share, tools
+from eadip.gateway.static import mount_ui
 from eadip.observability.logging import configure_logging, get_logger
 from eadip.observability.otel import setup_telemetry
 from eadip.platform.factory import build_rate_limiter, seed_default_prompts
@@ -56,10 +57,13 @@ def create_app() -> FastAPI:
         # Outermost-added runs first: shed excess load before any work happens.
         app.add_middleware(RateLimitMiddleware, limiter=build_rate_limiter(settings))
 
+    # Glass Box UI (when built): the SPA lives at /app; the bare host lands there,
+    # or on the API docs when the gateway runs API-only.
+    ui = mount_ui(app)
+
     @app.get("/", include_in_schema=False)
     async def root() -> RedirectResponse:
-        # A browser landing on the bare host should find the API, not a 404.
-        return RedirectResponse(url="/docs")
+        return RedirectResponse(url="/app" if ui else "/docs")
 
     app.include_router(health.router)
     app.include_router(runs.router)
@@ -67,6 +71,7 @@ def create_app() -> FastAPI:
     app.include_router(analytics.router)
     app.include_router(tools.router)
     app.include_router(share.router)
+    app.include_router(datasets.router)
     app.include_router(admin.router)
 
     setup_telemetry(

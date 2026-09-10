@@ -183,6 +183,10 @@ class Settings(BaseSettings):
     event_log_max_runs: int = 500
     # Share links (Glass Box): a signed, read-only, expiring replay token.
     share_link_ttl_s: int = 7 * 24 * 3600
+    # Bring-your-own CSV (Glass Box, DuckDB backend only).
+    dataset_max_bytes: int = 5_000_000
+    dataset_max_columns: int = 32
+    dataset_max_rows: int = 100_000
 
     # Feature flags (decouple deploy from release). Seed for the runtime
     # FeatureFlagService — admins flip flags at runtime via the portal (FR-057).

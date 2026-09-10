@@ -16,6 +16,7 @@ class AnalyticsRequest:
 
     tenant_id: UUID
     question: str
+    table: str | None = None  # an uploaded dataset's logical name (Glass Box)
     metric: str | None = None  # logical metric name (e.g. "gross_margin")
     dimension: str | None = None  # driver dimension (e.g. "product_line")
     filter_column: str = "region"  # equality-filter column for `filter_value`
@@ -78,3 +79,8 @@ class AnalysisResult:
     findings: list[Finding] = field(default_factory=list)
     queries: list[SqlArtifact] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    total: float | None = None  # the headline movement (sum of driver deltas, or the total)
+    # Column roles the queries used, so the verifier (server or browser) can
+    # re-derive numbers without guessing which text column is the time axis.
+    period_column: str | None = None
+    dimension: str | None = None

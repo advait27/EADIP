@@ -26,7 +26,7 @@ _DUCKDB = importlib.util.find_spec("duckdb") is not None
 
 
 class _Interp:
-    async def interpret(self, question: str) -> Goal:
+    async def interpret(self, question: str, *, tenant_id: object = None) -> Goal:
         return Goal(objective=question, metrics=["margin"])
 
 

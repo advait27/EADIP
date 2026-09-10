@@ -9,3 +9,8 @@ dist/
 build/
 .env
 .DS_Store
+
+# Glass Box UI build (built in CI / Docker; see `make web`)
+src/eadip/gateway/static/app/
+web/node_modules/
+web/dist/

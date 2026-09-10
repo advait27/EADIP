@@ -24,7 +24,7 @@ from eadip.security.rbac import Effect
 
 
 class StubInterpreter:
-    async def interpret(self, question: str) -> Goal:
+    async def interpret(self, question: str, *, tenant_id: object = None) -> Goal:
         return Goal(objective=question, metrics=[])
 
 

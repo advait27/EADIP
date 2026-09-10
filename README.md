@@ -70,6 +70,27 @@ run, and strict walls between different companies' (tenants') data.
 
 ---
 
+## Glass Box (the UI)
+
+Ask a question and watch the investigation happen as a live evidence graph:
+goal → plan steps → findings → sources → verified claims → recommendations.
+Click any number and **re-run its SQL in your own browser** (DuckDB-WASM over
+the tenant's rows, the same governed read path the verifier uses). Copy a
+**share link** and anyone can replay the run, no login. Drop a **CSV** and ask
+about it by name.
+
+```bash
+make web        # build the UI into the gateway (node 22)
+make dev        # http://localhost:8000/app
+```
+
+Behind it: runs now execute in the background (`RunExecutor` + a durable event
+log), so `GET /v1/runs/{id}/events` replays from `Last-Event-ID` and tails live;
+`GET /v1/runs/{id}` (status), `/timeline`, `/graph`, `/evidence-bundle`,
+`POST /v1/runs/{id}/share` → `GET /v1/share/{token}`, and `POST /v1/datasets`.
+Design: [docs/designs/glass-box.md](docs/designs/glass-box.md) ·
+[ADR-0014](docs/adr/0014-glass-box.md).
+
 ## Quickstart
 
 ```bash
@@ -96,6 +117,9 @@ make reliability        # fault-injection suite: crash/resume, breakers, bounds
 
 # 5. Full local stack (gateway + Postgres + Redis + Qdrant + Neo4j + OTel)
 make up                 # docker compose up --build
+
+# 6. The Glass Box UI (see above)
+make web && make dev    # then open http://localhost:8000/app
 ```
 
 OpenAPI docs are served at `http://localhost:8000/docs`. Everything runs
@@ -264,6 +288,7 @@ src/eadip/
                   rate limiting, residency, retention
   eval/           eval harness + gold sets, safety suite, reliability suite,
                   load harness
+  gateway/static/ the built UI (git-ignored; `make web`)
 tests/            unit/  integration/  (Postgres/Qdrant tests run in CI)
 deploy/           helm/  k8s/ (KEDA, DR jobs)  docker/  terraform/  otel/
 docs/             adr/ (13 ADRs)  runbooks/  compliance/  security/
@@ -276,14 +301,18 @@ model seam; structlog + OpenTelemetry; pytest/ruff/mypy/bandit.
 **CLIs:** `eadip-eval`, `eadip-safety`, `eadip-reliability`, `eadip-load`,
 `eadip-retention`, `eadip-migrate`, `eadip-ingest`.
 
+**UI:** `web/` (Vite + React + TypeScript, d3-force, DuckDB-WASM) → built into
+`src/eadip/gateway/static/app` and served at `/app`.
+
 ---
 
 ## Quality gates (all blocking in CI)
 
 | Gate | What it proves |
 |---|---|
-| ruff + mypy | style + static type safety (158 source files) |
-| pytest | 274 unit/integration tests (RLS + vector isolation run against real services in CI) |
+| ruff + mypy | style + static type safety (167 source files) |
+| pytest | 407 unit/integration tests (RLS + vector isolation run against real services in CI) |
+| tsc + vitest | the Glass Box UI: types, live-graph reducer, SSE parser, browser recompute |
 | `eadip-eval` | live pipeline accuracy ≥ 92%, verified coverage ≥ 95%, grounding ≥ 95% |
 | `eadip-safety` | six AI-safety bounds, zero unapproved actions |
 | `eadip-reliability` | six fault-injection scenarios (crash/resume, breakers, degradation, bounds) |

@@ -151,6 +151,22 @@ class SharePayload(BaseModel):
     evidence_bundle_url: str
 
 
+class DatasetColumn(BaseModel):
+    name: str
+    type: str
+
+
+class DatasetItem(BaseModel):
+    """An uploaded dataset (Glass Box): what the question can name."""
+
+    name: str  # logical name to use in questions and the one provenance SQL shows
+    table: str  # the physical, tenant-scoped table
+    columns: list[DatasetColumn]
+    row_count: int
+    period_column: str | None = None
+    dimensions: list[str] = Field(default_factory=list)
+
+
 class ReportResponse(BaseModel):
     """The verified executive brief for a run (Phase 7, EXP-01..06)."""
 

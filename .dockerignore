@@ -16,3 +16,6 @@ EADIP_TAD.html
 EADIP_SCRUM_PLAN.md
 EADIP_PHASE1_SPRINTS.md
 EADIP_backlog.csv
+
+web/node_modules
+src/eadip/gateway/static/app

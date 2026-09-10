@@ -37,7 +37,13 @@ from eadip.analytics.statistics import (
     linear_forecast,
 )
 from eadip.observability.logging import get_logger
-from eadip.ports.warehouse import QueryResult, Warehouse, WarehouseError, WarehouseSchema
+from eadip.ports.warehouse import (
+    QueryResult,
+    TableSchema,
+    Warehouse,
+    WarehouseError,
+    WarehouseSchema,
+)
 
 log = get_logger(__name__)
 
@@ -99,13 +105,22 @@ class AnalyticsService:
         metric_label = plan.metric_label
 
         # --- driver attribution over baseline vs current --------------------
+        total: float | None = None
         if baseline_p and current_p:
             driver_plan = self._driver_plan(plan, (baseline_p, current_p))
             art, result = await self._run(driver_plan, request, schema, validator)
             if art:
                 queries.append(art)
-            if result and result.row_count:
+            if result and result.row_count and plan.dimension is not None:
                 drivers, findings_d, headline, verified = self._analyze_drivers(
+                    result, plan, baseline_p, current_p, art.sql if art else ""
+                )
+                findings.extend(findings_d)
+                total = sum(d.delta for d in drivers) if drivers else None
+            elif result and result.row_count:
+                # No driver dimension (a dataset with only a time axis): the
+                # movement is still measured, just not attributed.
+                findings_d, headline, verified, total = self._analyze_totals(
                     result, plan, baseline_p, current_p, art.sql if art else ""
                 )
                 findings.extend(findings_d)
@@ -126,7 +141,7 @@ class AnalyticsService:
                 findings.extend(self._analyze_trend(result, plan, art.sql if art else ""))
 
         # --- correlation across dimension members (assoc. only) -------------
-        if request.effort == "standard" or request.effort == "deep":
+        if (request.effort == "standard" or request.effort == "deep") and plan.dimension:
             corr_plan = self._correlation_plan(plan)
             art, result = await self._run(corr_plan, request, schema, validator)
             if art:
@@ -143,10 +158,16 @@ class AnalyticsService:
             findings=findings,
             queries=queries,
             warnings=warnings,
+            total=total,
+            period_column=plan.period_column,
+            dimension=plan.dimension,
         )
 
     # --- interpretation -------------------------------------------------------
     def _interpret(self, request: AnalyticsRequest, schema: WarehouseSchema) -> _Plan:
+        table = self._choose_table(request, schema)
+        if table is not None and table.name != self._default_table:
+            return self._interpret_dataset(request, table)
         q = request.question.lower()
         metric_name = request.metric or self._default_metric
         if not request.metric:
@@ -175,6 +196,79 @@ class AnalyticsService:
             metric_label=label,
             dimension=dimension,
             period_column=request.period_column,
+            filters=filters,
+        )
+
+    def _choose_table(
+        self, request: AnalyticsRequest, schema: WarehouseSchema
+    ) -> TableSchema | None:
+        """An uploaded dataset named in the question (or requested explicitly)
+        wins over the default table; the longest matching name wins ties."""
+        if request.table:
+            return schema.table(request.table)
+        q = request.question.lower()
+        best: TableSchema | None = None
+        for t in schema.tables:
+            if t.name == self._default_table:
+                continue
+            for pattern in (t.name, t.name.replace("_", " ")):
+                if re.search(rf"\b{re.escape(pattern)}\b", q):
+                    if best is None or len(t.name) > len(best.name):
+                        best = t
+                    break
+        return best
+
+    def _interpret_dataset(self, request: AnalyticsRequest, table: TableSchema) -> _Plan:
+        """Interpretation over an uploaded dataset (Glass Box): every role comes
+        from the table's own schema + hints, never from the finance defaults."""
+        q = request.question.lower()
+        numeric = table.numeric_columns()
+        names = table.column_names()
+
+        def mentioned(col: str) -> bool:
+            return any(re.search(rf"\b{re.escape(p)}\b", q) for p in (col, col.replace("_", " ")))
+
+        metric = request.metric if request.metric in numeric else None
+        if metric is None:
+            metric = next((c for c in numeric if mentioned(c)), numeric[0])
+        period = table.period_column
+        if period is None:
+            period = (
+                request.period_column
+                if request.period_column in names
+                else next(
+                    (c.name for c in table.columns if not c.is_numeric and c.name != "tenant_id"),
+                    "",
+                )
+            )
+        dimension: str | None = None
+        if request.dimension in names and request.dimension != period:
+            dimension = request.dimension
+        elif table.dimensions:
+            dimension = table.dimensions[0]
+
+        filters: tuple[tuple[str, str], ...] = ()
+        if request.filter_value and request.filter_column in names:
+            filters = ((request.filter_column, request.filter_value),)
+        else:
+            best: tuple[str, str] | None = None
+            for col, values in table.sample_values:
+                if col in (period, dimension, "tenant_id"):
+                    continue
+                for v in values:
+                    if re.search(rf"\b{re.escape(v.lower())}\b", q) and (
+                        best is None or len(v) > len(best[1])
+                    ):
+                        best = (col, v)
+            if best is not None:
+                filters = (best,)
+        return _Plan(
+            table=table.name,
+            metric_name=metric,
+            metric_expr=metric,
+            metric_label=metric.replace("_", " "),
+            dimension=dimension,
+            period_column=period,
             filters=filters,
         )
 
@@ -208,14 +302,15 @@ class AnalyticsService:
 
     # --- query plans ----------------------------------------------------------
     def _driver_plan(self, plan: _Plan, periods: tuple[str, str]) -> QueryPlan:
+        dims = (plan.dimension, plan.period_column) if plan.dimension else (plan.period_column,)
         return QueryPlan(
             purpose="drivers",
             table=plan.table,
-            dimensions=(plan.dimension, plan.period_column),
+            dimensions=dims,
             measures=((f"SUM({plan.metric_expr})", plan.metric_name),),
             filters=plan.filters,
             period_in=(plan.period_column, periods),
-            order_by=((plan.dimension, "ASC"), (plan.period_column, "ASC")),
+            order_by=tuple((d, "ASC") for d in dims),
         )
 
     def _trend_plan(self, plan: _Plan) -> QueryPlan:
@@ -229,6 +324,7 @@ class AnalyticsService:
         )
 
     def _correlation_plan(self, plan: _Plan) -> QueryPlan:
+        assert plan.dimension is not None
         return QueryPlan(
             purpose="correlation",
             table=plan.table,
@@ -300,6 +396,29 @@ class AnalyticsService:
         return None, None
 
     # --- statistics + provenance ---------------------------------------------
+    def _analyze_totals(
+        self, result: QueryResult, plan: _Plan, baseline_p: str, current_p: str, sql: str
+    ) -> tuple[list[Finding], str, bool, float | None]:
+        pi = result.column_index(plan.period_column)
+        mi = result.column_index(plan.metric_name)
+        base = sum(float(r[mi]) for r in result.rows if str(r[pi]) == baseline_p)
+        cur = sum(float(r[mi]) for r in result.rows if str(r[pi]) == current_p)
+        total = cur - base
+        scope = f"{plan.filters[0][1]} " if plan.filters else ""
+        verb = "fell" if total < 0 else "rose"
+        headline = (
+            f"{scope}{plan.metric_label} {verb} by {abs(total):,.0f} "
+            f"({base:,.0f} → {cur:,.0f}) from {baseline_p} to {current_p}"
+        )
+        finding = Finding(
+            kind="headline",
+            statement=headline,
+            magnitude=total,
+            evidence_sql=sql,
+            detail={"total": total, "baseline": base, "current": cur},
+        )
+        return [finding], headline, True, total
+
     def _analyze_drivers(
         self,
         result: QueryResult,
@@ -308,6 +427,7 @@ class AnalyticsService:
         current_p: str,
         sql: str,
     ) -> tuple[list[Driver], list[Finding], str, bool]:
+        assert plan.dimension is not None
         di = result.column_index(plan.dimension)
         pi = result.column_index(plan.period_column)
         mi = result.column_index(plan.metric_name)
@@ -395,6 +515,7 @@ class AnalyticsService:
         return findings
 
     def _analyze_correlation(self, result: QueryResult, plan: _Plan, sql: str) -> list[Finding]:
+        assert plan.dimension is not None
         pi = result.column_index(plan.period_column)
         di = result.column_index(plan.dimension)
         mi = result.column_index(plan.metric_name)
@@ -452,7 +573,7 @@ class _Plan:
         metric_name: str,
         metric_expr: str,
         metric_label: str,
-        dimension: str,
+        dimension: str | None,
         period_column: str,
         filters: tuple[tuple[str, str], ...],
     ) -> None:

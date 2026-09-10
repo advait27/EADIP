@@ -101,7 +101,9 @@ class OrchestratorService:
         # INTERPRET (skipped when resuming a checkpoint that already has a goal).
         if state.goal is None:
             state.status = RunStatus.PLANNING
-            state.goal = await self._interpreter.interpret(state.question)
+            state.goal = await self._interpreter.interpret(
+                state.question, tenant_id=state.tenant_id
+            )
             await self._cp.save(state)
             yield Event(type="goal.interpreted", data=state.goal.model_dump())
 

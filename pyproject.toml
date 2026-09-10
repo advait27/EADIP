@@ -24,6 +24,7 @@ dependencies = [
   # Pure-Python SQL parser. Core (not an extra) so the NL->SQL safety gate
   # (analytics.sql_validator) is always importable and always unit-tested.
   "sqlglot>=25.0",
+  "python-multipart>=0.0.32",
 ]
 
 [project.optional-dependencies]
@@ -75,6 +76,9 @@ eadip-ingest = "eadip.ingestion.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/eadip"]
+# The Glass Box UI build is git-ignored (hatchling honours .gitignore); list it
+# as an artifact so a wheel built after `make web` ships the UI.
+artifacts = ["src/eadip/gateway/static/app/**"]
 
 [tool.ruff]
 line-length = 100

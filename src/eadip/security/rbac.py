@@ -81,6 +81,11 @@ def default_catalog() -> RoleCatalog:
                 # Read-only governed tools (Phase 8) are a read tier, like the
                 # knowledge/metrics reads; write/high-impact tools stay approver-only.
                 Permission("tool", "*", Effect.READ),
+                # Bring-your-own data (Glass Box): an analyst may upload and
+                # list datasets for their own tenant; the table lands behind
+                # the same NL->SQL safety gate as everything else.
+                Permission("dataset", "*", Effect.READ),
+                Permission("dataset", "*", Effect.WRITE),
             }
         ),
     )
@@ -92,7 +97,12 @@ def default_catalog() -> RoleCatalog:
             {Permission("tool", "*", Effect.WRITE), Permission("tool", "*", Effect.HIGH_IMPACT)}
         ),
     )
-    viewer = Role(name="viewer", permissions=frozenset({Permission("run", "runs", Effect.READ)}))
+    viewer = Role(
+        name="viewer",
+        permissions=frozenset(
+            {Permission("run", "runs", Effect.READ), Permission("dataset", "*", Effect.READ)}
+        ),
+    )
     compliance = Role(
         name="compliance", permissions=frozenset({Permission("audit", "*", Effect.READ)})
     )

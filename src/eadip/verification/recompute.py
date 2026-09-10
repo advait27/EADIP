@@ -72,6 +72,19 @@ def _series_for_member(
     return [by.get(p, 0.0) for p in periods]
 
 
+def _declared_period_col(finding: Finding, result: QueryResult, tcols: list[int]) -> int | None:
+    """The period column the analytics step declared (``detail.period_column``),
+    when it is one of the result's text columns; else None (fall back to the
+    cardinality heuristic, which the demo schema satisfies)."""
+    name = str(finding.detail.get("period_column") or "").lower()
+    if not name:
+        return None
+    lower = [c.lower() for c in result.columns]
+    if name in lower and lower.index(name) in tcols:
+        return lower.index(name)
+    return None
+
+
 def recompute_magnitude(finding: Finding, result: QueryResult) -> float | None:
     """Recompute the finding's magnitude from the fresh result, or None when the
     kind isn't independently recomputable (verifier falls back to reproducibility)."""
@@ -81,10 +94,16 @@ def recompute_magnitude(finding: Finding, result: QueryResult) -> float | None:
     ni: int = found  # annotated int so closures below capture a non-Optional
     tcols = _text_cols(result, ni)
 
+    declared = _declared_period_col(finding, result, tcols)
+
     if finding.kind == "headline":
         if not tcols:
             return None
-        period_col = min(tcols, key=lambda c: len(_distinct(result, c)))
+        period_col = (
+            declared
+            if declared is not None
+            else min(tcols, key=lambda c: len(_distinct(result, c)))
+        )
         periods = _distinct(result, period_col)
         if len(periods) < 2:
             return None
@@ -97,10 +116,10 @@ def recompute_magnitude(finding: Finding, result: QueryResult) -> float | None:
         member = finding.detail.get("member")
         if member is None or len(tcols) < 2:
             return None
-        dim_col = _col_containing(result, tcols, str(member))
+        dim_col = _col_containing(result, [c for c in tcols if c != declared], str(member))
         if dim_col is None:
             return None
-        period_col = next(c for c in tcols if c != dim_col)
+        period_col = declared if declared is not None else next(c for c in tcols if c != dim_col)
         periods = _distinct(result, period_col)
         if len(periods) < 2:
             return None
@@ -134,10 +153,10 @@ def recompute_magnitude(finding: Finding, result: QueryResult) -> float | None:
         x, y = finding.detail.get("x"), finding.detail.get("y")
         if not x or not y or len(tcols) < 2:
             return None
-        dim_col = _col_containing(result, tcols, str(x))
+        dim_col = _col_containing(result, [c for c in tcols if c != declared], str(x))
         if dim_col is None:
             return None
-        period_col = next(c for c in tcols if c != dim_col)
+        period_col = declared if declared is not None else next(c for c in tcols if c != dim_col)
         periods = _distinct(result, period_col)
         sx = _series_for_member(result, dim_col, period_col, ni, periods, str(x))
         sy = _series_for_member(result, dim_col, period_col, ni, periods, str(y))
