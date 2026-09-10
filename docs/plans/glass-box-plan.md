@@ -1,4 +1,4 @@
-# Plan: Glass Box (feat/glass-box)
+# Plan: Glass Box (feat/glass-box) — DONE (all 7 tasks landed; see ADR-0014)
 
 Design: docs/designs/glass-box.md. Every task lands with tests; every existing gate stays green.
 
