@@ -103,7 +103,15 @@ export function Graph({
     sim
       .force('charge', forceManyBody<SimNode>().strength((d) => -60 - RADIUS[d.node.kind] * 14))
       .force('center', forceCenter(size.w / 2, size.h / 2).strength(0.06))
-      .force('collide', forceCollide<SimNode>((d) => RADIUS[d.node.kind] + 14).strength(0.8))
+      // Labeled nodes (question/goal/step/claim/recommendation) reserve room to
+      // the right for their text so labels do not pile onto each other.
+      .force(
+        'collide',
+        forceCollide<SimNode>((d) => {
+          const r = RADIUS[d.node.kind] ?? 6
+          return r >= 9 ? r + 34 : r + 12
+        }).strength(0.85),
+      )
       .force(
         'link',
         forceLink<SimNode, SimLink>(links)
