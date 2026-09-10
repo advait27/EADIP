@@ -177,6 +177,11 @@ class Settings(BaseSettings):
     rate_limit_burst: int = 200
     max_concurrent_streams_per_tenant: int = 8
 
+    # Glass Box: runs execute in the background and stream from a durable event
+    # log. The in-memory log keeps the newest N runs (oldest terminal runs are
+    # evicted); the Postgres adapter is the production path.
+    event_log_max_runs: int = 500
+
     # Feature flags (decouple deploy from release). Seed for the runtime
     # FeatureFlagService — admins flip flags at runtime via the portal (FR-057).
     feature_flags: dict[str, bool] = Field(default_factory=dict)

@@ -26,10 +26,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await get_database().connect()
     # Bootstrap the governed prompt artifacts (Phase 11): the shipped agent
     # instructions become version-1 ACTIVE; later changes go through the eval gate.
-    from eadip.gateway.dependencies import get_prompt_registry
+    from eadip.gateway.dependencies import get_prompt_registry, get_run_executor, warm_singletons
 
     await seed_default_prompts(get_prompt_registry())
+    # Glass Box: build the executor (and the orchestrator, checkpointer, event
+    # log behind it) before the first request, so no cold-start race can exist.
+    warm_singletons()
     yield
+    await get_run_executor().shutdown()
     if get_settings().database_enabled:
         from eadip.gateway.dependencies import get_database
 
