@@ -93,7 +93,12 @@ export function Datasets() {
                     </td>
                     <td>{d.row_count}</td>
                     <td>{d.period_column ?? '—'}</td>
-                    <td className="small muted">{d.columns.map((c) => `${c.name}:${c.type}`).join(', ')}</td>
+                    <td className="small muted">
+                      {d.columns
+                        .filter((c) => c.name !== 'tenant_id')
+                        .map((c) => `${c.name}:${c.type}`)
+                        .join(', ')}
+                    </td>
                     <td>
                       <Link to={`/?q=${encodeURIComponent(`Why did ${metric} change in ${d.name}?`)}`}>ask →</Link>
                     </td>
