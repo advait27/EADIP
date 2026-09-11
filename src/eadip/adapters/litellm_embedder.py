@@ -10,6 +10,8 @@ from eadip.ports.embeddings import DenseVector
 
 # Known output dimensions for common models; otherwise inferred at first call.
 _KNOWN_DIMS = {
+    "voyage/voyage-3": 1024,
+    "voyage/voyage-3-lite": 512,
     "text-embedding-3-small": 1536,
     "text-embedding-3-large": 3072,
 }

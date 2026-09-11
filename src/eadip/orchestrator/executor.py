@@ -163,8 +163,13 @@ class RunExecutor:
                 )
             if self._gate is not None:
                 self._gate.release(gate_key)
-            self._tasks.pop(run_id, None)
-            self._last_type.pop(run_id, None)
+            # Only clear bookkeeping this task owns: once a terminal event is
+            # recorded the run counts as "not running", so a resume() can have
+            # already started a NEW task for the same run id before this
+            # finally runs. Popping unconditionally would untrack that task.
+            if self._tasks.get(run_id) is asyncio.current_task():
+                self._tasks.pop(run_id, None)
+                self._last_type.pop(run_id, None)
 
     async def _record(self, state: RunState, event: Event, *, safe: bool = False) -> None:
         try:

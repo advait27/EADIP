@@ -55,14 +55,14 @@ class Settings(BaseSettings):
     # planning/verification pinned to the strong tier and budget-aware
     # degradation for everything else. `default_model` remains the fallback for
     # single-model consumers (e.g. the LiteLLM embedder).
-    default_model: str = "gpt-4o-mini"
+    default_model: str = "anthropic/claude-sonnet-5"
     model_api_base: str | None = None
-    model_tier_strong: str = "gpt-4o"
-    model_tier_standard: str = "gpt-4o-mini"
-    model_tier_light: str = "gpt-4o-mini"
-    routing_cost_strong_usd: float = 0.02  # per-call estimates for budget-aware
-    routing_cost_standard_usd: float = 0.002  # degradation; tune per deployment
-    routing_cost_light_usd: float = 0.0005
+    model_tier_strong: str = "anthropic/claude-opus-5"
+    model_tier_standard: str = "anthropic/claude-sonnet-5"
+    model_tier_light: str = "anthropic/claude-haiku-4-5"
+    routing_cost_strong_usd: float = 0.045  # per-call estimates for budget-aware
+    routing_cost_standard_usd: float = 0.03  # degradation; tune per deployment
+    routing_cost_light_usd: float = 0.004
 
     # Run guards (PRD §19 / TAD Appendix A.3).
     max_run_cost_usd: float = 2.50
@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     embedding_backend: str = "hash"  # "hash" (deterministic dev) | "litellm"
     embedding_cache_backend: str = "memory"  # "memory" | "redis"
     hash_embedding_dim: int = 256
-    litellm_embedding_model: str = "text-embedding-3-small"
+    litellm_embedding_model: str = "voyage/voyage-3"
     qdrant_collection_prefix: str = "kb"
     chunk_max_chars: int = 1200
     chunk_overlap: int = 150

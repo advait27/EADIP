@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -110,6 +111,10 @@ class DatasetError(ValueError):
     """Client-safe reason a CSV could not become a table."""
 
 
+class DatasetTooLarge(DatasetError):
+    """The upload exceeds a configured byte/row/column cap (HTTP 413)."""
+
+
 def normalise_header(raw: str, position: int, taken: set[str]) -> str:
     name = re.sub(r"[^a-z0-9]+", "_", raw.strip().lower()).strip("_")
     name = re.sub(r"^[^a-z]+", "", name)
@@ -139,11 +144,12 @@ def slugify_table(filename: str) -> str:
 
 
 def _is_number(v: str) -> bool:
+    """Finite numbers only: ``nan``/``inf`` parse as floats but are not valid
+    JSON and would poison every aggregate, so they make the column text."""
     try:
-        float(v.replace(",", ""))
+        return math.isfinite(float(v.replace(",", "")))
     except ValueError:
         return False
-    return True
 
 
 @dataclass
@@ -177,7 +183,7 @@ def parse_csv(
     max_rows: int = 100_000,
 ) -> ParsedDataset:
     if len(data) > max_bytes:
-        raise DatasetError(f"file exceeds {max_bytes} bytes")
+        raise DatasetTooLarge(f"file exceeds {max_bytes} bytes")
     try:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
@@ -187,23 +193,27 @@ def parse_csv(
         header = next(reader)
     except StopIteration:
         raise DatasetError("file is empty") from None
-    header = [h for h in header]
+    except csv.Error as exc:
+        raise DatasetError(f"malformed CSV: {exc}") from None
     if not any(h.strip() for h in header):
         raise DatasetError("header row is empty")
     if len(header) > max_columns:
-        raise DatasetError(f"more than {max_columns} columns")
+        raise DatasetTooLarge(f"more than {max_columns} columns")
     taken: set[str] = set()
     names = [normalise_header(h, i + 1, taken) for i, h in enumerate(header)]
 
     raw_rows: list[list[str]] = []
-    for row in reader:
-        if not row or all(not c.strip() for c in row):
-            continue
-        if len(row) < len(names):
-            row = row + [""] * (len(names) - len(row))
-        raw_rows.append([c.strip() for c in row[: len(names)]])
-        if len(raw_rows) > max_rows:
-            raise DatasetError(f"more than {max_rows} rows")
+    try:
+        for row in reader:
+            if not row or all(not c.strip() for c in row):
+                continue
+            if len(row) < len(names):
+                row = row + [""] * (len(names) - len(row))
+            raw_rows.append([c.strip() for c in row[: len(names)]])
+            if len(raw_rows) > max_rows:
+                raise DatasetTooLarge(f"more than {max_rows} rows")
+    except csv.Error as exc:
+        raise DatasetError(f"malformed CSV: {exc}") from None
     if not raw_rows:
         raise DatasetError("no data rows")
 
@@ -217,6 +227,12 @@ def parse_csv(
         period = next((n for n in names if types[n] == "text"), None)
     if not any(t == "number" for t in types.values()):
         raise DatasetError("no numeric column found; nothing to measure")
+    if period is None:
+        # Analytics always compares across a period/dimension column; a table
+        # of nothing but numbers can be stored but never questioned.
+        raise DatasetError(
+            "no period or text column found; add a date, quarter, month or category column"
+        )
 
     rows: list[list[Any]] = []
     for r in raw_rows:
@@ -299,4 +315,6 @@ class InMemoryDatasetRegistry:
 
 
 def physical_name(tenant_id: UUID, name: str) -> str:
-    return f"ds_{tenant_id.hex[:8]}_{name}"
+    # The full tenant id: a prefix could collide across tenants, and
+    # register_dataset DROPs + recreates the physical table it maps to.
+    return f"ds_{tenant_id.hex}_{name}"

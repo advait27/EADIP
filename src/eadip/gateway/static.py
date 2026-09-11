@@ -11,8 +11,10 @@ client accepts it. Without a build the gateway is API-only, exactly as before.
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 
+import anyio
 from fastapi import FastAPI
 from starlette.responses import FileResponse, Response
 from starlette.staticfiles import StaticFiles
@@ -23,14 +25,35 @@ _ENCODINGS = (("br", ".br"), ("gzip", ".gz"))
 _IMMUTABLE = "public, max-age=31536000, immutable"
 
 
-def _precompressed(directory: str, path: str, accept: str) -> tuple[Path, str, str] | None:
-    """(compressed file, encoding, media type of the ORIGINAL) or None."""
-    full = Path(directory) / path
-    if not full.is_file():
-        return None
+def _accepted_encodings(accept: str) -> set[str]:
+    """Content codings the client accepts, honouring ``q=0`` refusals."""
+    accepted: set[str] = set()
+    for part in accept.split(","):
+        coding, _, params = part.strip().partition(";")
+        if not coding:
+            continue
+        q = 1.0
+        for param in params.split(";"):
+            key, _, value = param.strip().partition("=")
+            if key == "q":
+                try:
+                    q = float(value)
+                except ValueError:
+                    q = 0.0
+        if q > 0:
+            accepted.add(coding)
+    return accepted
+
+
+def _precompressed(full: Path, accept: str) -> tuple[Path, str, str] | None:
+    """(compressed sibling of ``full``, encoding, media type of the ORIGINAL) or
+    None. ``full`` must already be a contained, existing file (see
+    ``PrecompressedStaticFiles.get_response``): this only ever probes ``full``
+    plus a known suffix, never the raw request path."""
+    accepted = _accepted_encodings(accept)
     for encoding, suffix in _ENCODINGS:
-        candidate = Path(str(full) + suffix)
-        if encoding in accept and candidate.is_file():
+        candidate = full.with_name(full.name + suffix)
+        if encoding in accepted and candidate.is_file():
             media_type, _ = _guess_type(full)
             return candidate, encoding, media_type or "application/octet-stream"
     return None
@@ -45,7 +68,14 @@ class PrecompressedStaticFiles(StaticFiles):
         for name, value in scope.get("headers", []):
             if name == b"accept-encoding":
                 accept = value.decode("latin-1").lower()
-        found = _precompressed(str(self.directory), path, accept) if accept else None
+        found = None
+        if accept:
+            # Starlette's lookup_path is the containment check: a request path
+            # that escapes the mount resolves to nothing. Siblings are probed
+            # only for the file it returns.
+            full_path, stat_result = await anyio.to_thread.run_sync(self.lookup_path, path)
+            if stat_result is not None and stat.S_ISREG(stat_result.st_mode):
+                found = _precompressed(Path(full_path), accept)
         response: Response
         if found is not None:
             candidate, encoding, media_type = found
