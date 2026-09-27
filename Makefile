@@ -1,4 +1,4 @@
-.PHONY: install dev test lint format type eval safety reliability load security retention up down build
+.PHONY: install dev test lint format type eval safety reliability load security retention up down build web web-dev web-test
 
 install:        ## Install deps (incl. dev extras)
 	uv sync --extra dev
@@ -45,3 +45,12 @@ down:           ## Tear down the local stack and volumes
 
 build:          ## Build the gateway image
 	docker build -t eadip-gateway:dev .
+
+web:            ## Build the Glass Box UI into the gateway (served at /app)
+	cd web && npm ci && npm run build
+
+web-dev:        ## Run the UI dev server (proxies /v1 to the gateway on :8000)
+	cd web && npm install && npm run dev
+
+web-test:       ## Type-check + unit-test the UI
+	cd web && npm ci && npm run typecheck && npm test

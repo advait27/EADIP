@@ -1,13 +1,18 @@
-"""Run lifecycle routes: accept an investigation + stream orchestration (FR-001,
-FR-005). The events stream IS the orchestrator running — it interprets, plans,
-routes, executes and reflects, emitting plan-preview + step + partial-finding
-events over SSE, and checkpointing as it goes (so a dropped connection resumes).
+"""Run lifecycle routes: accept an investigation + stream its progress (FR-001,
+FR-005).
+
+Glass Box: a run executes in the background from the moment it is accepted (the
+``RunExecutor``), recording every engine event in the durable event log. The
+SSE stream is a *subscriber*: it replays the log from ``Last-Event-ID`` and then
+tails live events, so a client may disconnect, refresh, or share the run without
+stalling it. Event names/payloads are unchanged; each message now carries ``id``.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from typing import Annotated
 from uuid import UUID
 
@@ -23,27 +28,33 @@ from eadip.gateway.dependencies import (
     AuditLogDep,
     BudgetLedgerDep,
     CheckpointerDep,
-    ConcurrencyGateDep,
-    NotificationServiceDep,
-    OrchestratorDep,
+    EventLogDep,
     ResidencyGuardDep,
+    RunExecutorDep,
     RunRepositoryDep,
+    SettingsDep,
+    WarehouseDep,
 )
 from eadip.gateway.models import (
     ApprovalItem,
+    ClaimCounts,
     CreateRun,
     DecisionRequest,
     DecisionResponse,
     ReportResponse,
     RunResponse,
+    RunStatusResponse,
+    TimelineResponse,
 )
 from eadip.observability.logging import get_logger
+from eadip.orchestrator.executor import StartResult
+from eadip.orchestrator.graph import EvidenceGraph, build_evidence_graph
 from eadip.orchestrator.state import RunState
-from eadip.platform.models import Notification, NotificationKind
-from eadip.platform.notifications import notifications_from_event
+from eadip.ports.events import LoggedEvent, is_terminal
 from eadip.security.audit import make_event
 from eadip.security.identity import Identity
 from eadip.security.rbac import Effect
+from eadip.verification.bundle import EvidenceBundle, build_evidence_bundle
 from eadip.verification.models import VerificationStatus
 
 router = APIRouter(prefix="/v1/runs", tags=["runs"])
@@ -66,9 +77,10 @@ async def create_run(
     checkpointer: CheckpointerDep,
     audit: AuditLogDep,
     budgets: BudgetLedgerDep,
+    executor: RunExecutorDep,
 ) -> RunResponse:
     """Accept an investigation (FR-001): persist the run + an initial checkpoint,
-    then hand back the SSE URL that drives the orchestration."""
+    start executing it in the background, and hand back the SSE URL to watch."""
     # Per-tenant budget (Phase 11, FR-053): an exhausted monthly cap refuses NEW
     # runs; in-flight runs stay bounded by the per-run cost ceiling.
     if not await budgets.allows_new_run(identity.tenant_id):
@@ -83,6 +95,14 @@ async def create_run(
         acl_tags=identity.roles,  # Phase 4/6 bridge: roles double as ACL tags
     )
     await checkpointer.save(state)
+    # Backpressure (Phase 11, NFR-13): in-flight runs per tenant are bounded at
+    # start; excess load is shed here with Retry-After instead of queueing.
+    if executor.start(state) is StartResult.REFUSED_CAPACITY:
+        raise HTTPException(
+            status_code=429,
+            detail="too many concurrent runs for this tenant",
+            headers={"Retry-After": "5"},
+        )
     await audit.record(
         make_event(
             tenant_id=identity.tenant_id,
@@ -97,69 +117,216 @@ async def create_run(
     return RunResponse(id=run.id, status=run.status, question=run.question, events_url=events_url)
 
 
+def _sse(event: LoggedEvent) -> dict[str, str]:
+    return {"id": str(event.seq), "event": event.type, "data": json.dumps(event.data)}
+
+
+def _last_event_id(request: Request) -> int:
+    raw = request.headers.get("Last-Event-ID", "")
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
+
+
 @router.get("/{run_id}/events", name="stream_run_events")
 async def stream_run_events(
     run_id: UUID,
+    request: Request,
     identity: RunActorDep,
     _residency: ResidencyGuardDep,
     checkpointer: CheckpointerDep,
-    orchestrator: OrchestratorDep,
+    executor: RunExecutorDep,
+    event_log: EventLogDep,
     audit: AuditLogDep,
-    gate: ConcurrencyGateDep,
-    notifications: NotificationServiceDep,
-    budgets: BudgetLedgerDep,
 ) -> EventSourceResponse:
-    """Stream the orchestration over SSE (FR-005, NFR-01). Loads the run's
-    checkpoint (tenant-scoped) and runs the engine, relaying its events; a fresh
-    run starts from interpret, a checkpointed one resumes at the last step.
-
-    Phase 11 taps the stream it is already relaying: notifications fan out on
-    approval/completion/anomaly events, the run's final cost is charged to the
-    tenant budget, and concurrent streams per tenant are bounded (backpressure)."""
+    """Watch a run over SSE (FR-005, NFR-01). Replays the run's event log from
+    ``Last-Event-ID`` (or the start), then — while the run is executing — tails
+    live events until the next terminal event (``run.done``, ``run.failed`` or
+    ``approval.required``). A finished or paused run replays and closes."""
     state = await checkpointer.load(identity.tenant_id, run_id)
     if state is None:
         raise HTTPException(status_code=404, detail="run not found")
-    gate_key = str(identity.tenant_id)
-    if not gate.try_acquire(gate_key):
-        raise HTTPException(
-            status_code=429,
-            detail="too many concurrent runs for this tenant",
-            headers={"Retry-After": "5"},
-        )
+    after_seq = _last_event_id(request)
     await audit.record(
         make_event(
             tenant_id=identity.tenant_id,
             actor=str(identity.user_id),
             action="run.stream",
             run_id=run_id,
+            detail={"after_seq": after_seq},
         )
     )
 
     async def event_generator() -> AsyncIterator[dict[str, str]]:
+        # Head BEFORE the running check: if the run finishes in between, the
+        # replay below still contains its terminal event and we close cleanly.
+        head = await event_log.last_seq(run_id)
+        if not executor.is_running(run_id):
+            for event in await event_log.read(run_id, after_seq):
+                yield _sse(event)
+            log.debug(
+                "run.stream_closed",
+                run_id=str(run_id),
+                reason="replay",
+                head=head,
+                executor=executor.status(run_id),
+            )
+            return
+        # Subscribe first (inside stream()), then replay, then tail: no gap. A
+        # replayed terminal event (e.g. the approval.required of a run that has
+        # since been resumed) does not end the tail; only a NEW one does.
+        reason, last_seq = "exhausted", after_seq
         try:
-            async for event in orchestrator.stream(state):
-                for note in notifications_from_event(identity.tenant_id, run_id, event):
-                    await notifications.publish(note)
-                if event.type == "run.done":
-                    budget = await budgets.charge(
-                        identity.tenant_id, float(event.data.get("cost_usd", 0.0))
-                    )
-                    if budget.exhausted:
-                        await notifications.publish(
-                            Notification(
-                                tenant_id=identity.tenant_id,
-                                kind=NotificationKind.BUDGET_EXHAUSTED,
-                                severity="warning",
-                                title="Monthly budget exhausted — new runs will be refused",
-                                body=f"spent ${budget.spent_usd:g} of ${budget.monthly_cap_usd:g}",
-                                run_id=run_id,
-                            )
-                        )
-                yield {"event": event.type, "data": json.dumps(event.data)}
+            async with aclosing(event_log.stream(run_id, after_seq)) as events:
+                async for event in events:
+                    yield _sse(event)
+                    last_seq = event.seq
+                    if event.seq > head and is_terminal(event.type):
+                        reason = "terminal"
+                        return
+        except BaseException as exc:
+            reason = f"{type(exc).__name__}"
+            raise
         finally:
-            gate.release(gate_key)
+            log.debug(
+                "run.stream_closed",
+                run_id=str(run_id),
+                reason=reason,
+                head=head,
+                last_seq=last_seq,
+            )
 
     return EventSourceResponse(event_generator())
+
+
+def _claim_counts(state: RunState) -> ClaimCounts:
+    claims = state.verified_claims
+    return ClaimCounts(
+        verified=sum(c.status == VerificationStatus.VERIFIED for c in claims),
+        unverified=sum(c.status == VerificationStatus.UNVERIFIED for c in claims),
+        conflicting=sum(c.status == VerificationStatus.CONFLICTING for c in claims),
+    )
+
+
+async def _load_or_404(checkpointer: CheckpointerDep, identity: Identity, run_id: UUID) -> RunState:
+    state = await checkpointer.load(identity.tenant_id, run_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return state
+
+
+@router.get("/{run_id}", name="run_status", response_model=RunStatusResponse)
+async def run_status(
+    run_id: UUID,
+    identity: RunActorDep,
+    _residency: ResidencyGuardDep,
+    checkpointer: CheckpointerDep,
+    executor: RunExecutorDep,
+    event_log: EventLogDep,
+) -> RunStatusResponse:
+    """Where the run is right now (Glass Box): status, counts and the log head,
+    so a client can render after a refresh and reconnect with Last-Event-ID."""
+    state = await _load_or_404(checkpointer, identity, run_id)
+    return RunStatusResponse(
+        id=run_id,
+        question=state.question,
+        status=str(state.status),
+        running=executor.is_running(run_id),
+        iterations=state.iterations,
+        cost_usd=round(state.cost_usd, 6),
+        elapsed_s=round(state.elapsed_s, 3),
+        stop_reason=state.stop_reason,
+        findings=len(state.findings),
+        claims=_claim_counts(state),
+        pending_approvals=len(state.open_approvals()),
+        has_brief=state.brief is not None,
+        last_seq=await event_log.last_seq(run_id),
+    )
+
+
+@router.get("/{run_id}/timeline", name="run_timeline", response_model=TimelineResponse)
+async def run_timeline(
+    run_id: UUID,
+    identity: RunActorDep,
+    _residency: ResidencyGuardDep,
+    checkpointer: CheckpointerDep,
+    event_log: EventLogDep,
+    audit: AuditLogDep,
+) -> TimelineResponse:
+    """The run's recorded events in order (Glass Box replay)."""
+    state = await _load_or_404(checkpointer, identity, run_id)
+    await audit.record(
+        make_event(
+            tenant_id=identity.tenant_id,
+            actor=str(identity.user_id),
+            action="run.timeline",
+            run_id=run_id,
+        )
+    )
+    events = await event_log.read(run_id)
+    return TimelineResponse(
+        run_id=run_id,
+        question=state.question,
+        status=str(state.status),
+        events=[e.model_dump(mode="json") for e in events],
+    )
+
+
+@router.get("/{run_id}/graph", name="run_graph", response_model=EvidenceGraph)
+async def run_graph(
+    run_id: UUID,
+    identity: RunActorDep,
+    _residency: ResidencyGuardDep,
+    checkpointer: CheckpointerDep,
+    audit: AuditLogDep,
+) -> EvidenceGraph:
+    """The run's reasoning as an evidence graph (Glass Box): goal, steps,
+    findings, claims, sources and recommendations with provenance edges."""
+    state = await _load_or_404(checkpointer, identity, run_id)
+    await audit.record(
+        make_event(
+            tenant_id=identity.tenant_id,
+            actor=str(identity.user_id),
+            action="run.graph",
+            run_id=run_id,
+        )
+    )
+    return build_evidence_graph(state)
+
+
+@router.get("/{run_id}/evidence-bundle", name="run_evidence_bundle", response_model=EvidenceBundle)
+async def run_evidence_bundle(
+    run_id: UUID,
+    identity: RunActorDep,
+    _residency: ResidencyGuardDep,
+    checkpointer: CheckpointerDep,
+    warehouse: WarehouseDep,
+    settings: SettingsDep,
+    audit: AuditLogDep,
+) -> EvidenceBundle:
+    """Verify it yourself (Glass Box): every claim's provenance SQL plus the
+    tenant's rows for the tables it reads, fetched through the same safety gate
+    the server uses, so the reader can re-run the numbers in the browser."""
+    state = await _load_or_404(checkpointer, identity, run_id)
+    bundle = await build_evidence_bundle(
+        state,
+        warehouse,
+        row_cap=settings.analytics_row_cap,
+        rel_tolerance=settings.verification_rel_tolerance,
+        timeout_s=settings.analytics_statement_timeout_s,
+        max_join_tables=settings.analytics_max_join_tables,
+    )
+    await audit.record(
+        make_event(
+            tenant_id=identity.tenant_id,
+            actor=str(identity.user_id),
+            action="run.evidence_bundle",
+            run_id=run_id,
+            detail={"claims": len(bundle.claims), "tables": [t.name for t in bundle.tables]},
+        )
+    )
+    return bundle
 
 
 @router.get("/{run_id}/report", name="run_report", response_model=ReportResponse)
@@ -245,11 +412,13 @@ async def decide_approval(
     identity: ApproverDep,
     approvals: ApprovalServiceDep,
     audit: AuditLogDep,
+    executor: RunExecutorDep,
 ) -> DecisionResponse:
     """Rule on a pending approval (US-C1): approve / reject / edit-then-approve.
-    Requires the approver grant — the same authority that gates the action. On
-    approve, re-open the returned SSE URL to resume the run; on reject the step is
-    recorded and skipped. Every decision is audited."""
+    Requires the approver grant — the same authority that gates the action. The
+    run resumes in the background right away (approve executes the approved
+    payload, reject skips the step); ``resume_url`` is the stream to watch it on.
+    Every decision is audited."""
     decision = ApprovalDecision(
         kind=DecisionKind(body.decision),
         reason=body.reason,
@@ -292,6 +461,7 @@ async def decide_approval(
         decision=body.decision,
         status=str(req.status),
     )
+    await executor.resume(identity.tenant_id, run_id)
     return DecisionResponse(
         approval_id=req.id,
         status=str(req.status),

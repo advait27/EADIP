@@ -105,7 +105,7 @@ class SqlSafetyValidator:
         self._reject_star(root)
         tables = self._check_tables(root)
         self._check_functions(root)
-        columns = self._check_columns(root)
+        columns = self._check_columns(root, tables)
         self._check_tenant_predicate(root, tenant_id)
         self._check_cost_guard(root, tables)
         return ValidatedSql(
@@ -201,8 +201,15 @@ class SqlSafetyValidator:
             if name.upper() not in self._allowed_functions:
                 raise SqlValidationError("function is not allowed", {"function": name})
 
-    def _check_columns(self, root: exp.Select) -> set[str]:
+    def _check_columns(self, root: exp.Select, tables: set[str] | None = None) -> set[str]:
+        # With ONE base table the allowlist is that table's columns (an uploaded
+        # dataset's columns must not leak into queries on another table); joins
+        # keep the union check.
         known = self._schema.all_columns()
+        if tables is not None and len(tables) == 1:
+            only = self._schema.table(next(iter(tables)))
+            if only is not None:
+                known = only.column_names()
         defined = {a.alias.lower() for a in root.find_all(exp.Alias) if a.alias}
         defined |= {t.alias.lower() for t in root.find_all(exp.TableAlias) if t.alias}
         seen: set[str] = set()

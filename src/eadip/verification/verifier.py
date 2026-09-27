@@ -1,24 +1,53 @@
-"""Verification Agent (FR-041, AP-1): independently re-derive every number.
+"""Verification Agent (FR-041, AP-1): re-run and re-compute every number.
 
-For each analytics claim it re-validates the *exact source SQL* through the
-safety gate (a fresh safety check) and re-executes it on the warehouse, then
-recomputes the reported magnitude via an independent path and compares:
-match → verified, disagree → **conflicting** (never silently reconciled), can't
-re-run → unverified. Retrieval claims are grounding extracts (verified by their
-source pointer) and also serve as cross-source corroboration for analytics
-claims. This runs from a fresh context — it trusts nothing the run collected.
+What this checks, precisely. For each analytics claim it re-validates the
+*recorded source SQL* through the safety gate (a fresh safety check), re-executes
+that same SQL on the same warehouse the run used, and recomputes the reported
+magnitude from the fresh rows (``recompute.py``, which reuses the Phase 5
+statistics functions for forecasts/correlations/anomalies). It then compares:
+
+  - match → VERIFIED (``value_checked``);
+  - disagree, or an anomaly no longer flagged → **CONFLICTING**, never silently
+    reconciled (``value_checked``);
+  - the query reproduces but the number cannot be recomputed from it, or the
+    claim carries no magnitude to compare → UNVERIFIED (reproduced, not checked);
+  - cannot re-validate / re-run / no rows → UNVERIFIED.
+
+What is independent: the stored number is not trusted — it is recomputed from a
+fresh execution and compared, in a fresh context. What is NOT independent: the
+same SQL on the same warehouse (so a query that answers the wrong question, or
+wrong source data, reproduces faithfully) and, for some kinds, the same
+statistics code. This establishes reproducibility and arithmetic, not that the
+query is the right one.
+
+Retrieval and tool claims are VERIFIED on their source pointer (grounding /
+call provenance) — they are NOT value-checked. Retrieval claims also serve as
+cross-source corroboration for analytics claims.
+
+For every table an analytics claim touched, the tenant's rows (the same governed
+projection the evidence bundle serves) are hashed into a snapshot commitment
+(``commitment.py``) so a later bundle can show whether its rows still match.
 """
 
 from __future__ import annotations
 
 from uuid import UUID
 
+from eadip.analytics.models import QueryPlan
+from eadip.analytics.sql_generator import TemplateSqlGenerator
 from eadip.analytics.sql_validator import SqlSafetyValidator, SqlValidationError
 from eadip.orchestrator.models import Finding
-from eadip.ports.warehouse import Warehouse, WarehouseError
+from eadip.ports.warehouse import Warehouse, WarehouseError, WarehouseSchema
 from eadip.retrieval.text import content_tokens
+from eadip.verification.commitment import commit_rows
 from eadip.verification.confidence import score
-from eadip.verification.models import VerificationReport, VerificationStatus, VerifiedClaim
+from eadip.verification.models import (
+    NOTE_NO_MAGNITUDE,
+    NOTE_NOT_RECOMPUTED,
+    VerificationReport,
+    VerificationStatus,
+    VerifiedClaim,
+)
 from eadip.verification.recompute import anomaly_still_flagged, recompute_magnitude
 
 
@@ -43,18 +72,64 @@ class VerificationService:
         retrieval = [f for f in findings if f.source == "retrieval"]
         tool = [f for f in findings if f.source == "tool"]
         claims: list[VerifiedClaim] = []
+        commitments: dict[str, str] = {}
+        notes: list[str] = []
         if analytics:
             schema = await self._wh.schema(tenant_id)
             validator = SqlSafetyValidator(
                 schema, dialect="duckdb", max_join_tables=self._max_join_tables
             )
+            touched: set[str] = set()
             for f in analytics:
-                claims.append(await self._verify_analytics(f, validator, tenant_id, retrieval))
+                claims.append(
+                    await self._verify_analytics(f, validator, tenant_id, retrieval, touched)
+                )
+            commitments, notes = await self._commit_snapshots(touched, schema, validator, tenant_id)
         for f in retrieval:
             claims.append(self._verify_retrieval(f))
         for f in tool:
             claims.append(self._verify_tool(f))
-        return VerificationReport.from_claims(claims)
+        return VerificationReport.from_claims(
+            claims, snapshot_commitments=commitments, snapshot_notes=notes
+        )
+
+    # --- snapshot commitment: hash the rows the bundle will later serve --------
+    async def _commit_snapshots(
+        self,
+        tables: set[str],
+        schema: WarehouseSchema,
+        validator: SqlSafetyValidator,
+        tenant_id: UUID,
+    ) -> tuple[dict[str, str], list[str]]:
+        """Same plan as the evidence bundle's row fetch (all columns, no GROUP BY),
+        so the served rows can be compared with what verification saw. The hash
+        comes from this server; it detects later change, not a consistent lie."""
+        commitments: dict[str, str] = {}
+        notes: list[str] = []
+        for name in sorted(tables):
+            table = schema.table(name)
+            if table is None:
+                continue
+            plan = QueryPlan(
+                purpose="bundle",
+                table=table.name,
+                dimensions=tuple(c.name for c in table.columns),
+                group_by=False,
+            )
+            try:
+                sql = TemplateSqlGenerator.render(plan, schema.tenant_column, tenant_id)
+                validated = validator.validate(sql, tenant_id=tenant_id)
+                result = await self._wh.execute(
+                    tenant_id, validated.sql, row_cap=self._row_cap, timeout_s=self._timeout
+                )
+            except (SqlValidationError, WarehouseError) as exc:
+                notes.append(f"{name}: not committed ({exc})")
+                continue
+            if result.truncated:
+                notes.append(f"{name}: not committed (row cap {self._row_cap} hit)")
+                continue
+            commitments[table.name] = commit_rows(result.rows)
+        return commitments, notes
 
     # --- analytics: re-execute source query + recompute -----------------------
     async def _verify_analytics(
@@ -63,6 +138,7 @@ class VerificationService:
         validator: SqlSafetyValidator,
         tenant_id: UUID,
         retrieval: list[Finding],
+        touched: set[str],
     ) -> VerifiedClaim:
         corro = self._corroboration(finding, retrieval)
         sql = finding.evidence[0].ref if finding.evidence else ""
@@ -82,6 +158,7 @@ class VerificationService:
                 corro,
                 f"failed re-validation: {exc.reason}",
             )
+        touched.update(validated.tables)
         try:
             result = await self._wh.execute(
                 tenant_id, validated.sql, row_cap=self._row_cap, timeout_s=self._timeout
@@ -102,13 +179,14 @@ class VerificationService:
 
         recomputed = recompute_magnitude(finding, result)
         if recomputed is None:
+            # The query ran, but nothing was compared: reproducible, not checked.
             return self._claim(
                 finding,
-                VerificationStatus.VERIFIED,
+                VerificationStatus.UNVERIFIED,
                 "requery",
                 None,
                 corro,
-                "source query reproduced (aggregation not independently recomputed)",
+                NOTE_NOT_RECOMPUTED,
             )
         if finding.kind == "anomaly" and not anomaly_still_flagged(finding, result):
             return self._claim(
@@ -118,10 +196,26 @@ class VerificationService:
                 recomputed,
                 corro,
                 "point is no longer anomalous on re-derivation",
+                value_checked=True,
             )
-        if finding.magnitude is None or self._close(recomputed, finding.magnitude):
+        if finding.magnitude is None:
             return self._claim(
-                finding, VerificationStatus.VERIFIED, "recompute", recomputed, corro, ""
+                finding,
+                VerificationStatus.UNVERIFIED,
+                "recompute",
+                recomputed,
+                corro,
+                NOTE_NO_MAGNITUDE,
+            )
+        if self._close(recomputed, finding.magnitude):
+            return self._claim(
+                finding,
+                VerificationStatus.VERIFIED,
+                "recompute",
+                recomputed,
+                corro,
+                "",
+                value_checked=True,
             )
         return self._claim(
             finding,
@@ -130,6 +224,7 @@ class VerificationService:
             recomputed,
             corro,
             f"claimed {finding.magnitude:.4g}, re-derived {recomputed:.4g}",
+            value_checked=True,
         )
 
     # --- retrieval: grounding extract + corroboration -------------------------
@@ -144,7 +239,8 @@ class VerificationService:
             method="source_extract",
             confidence=score(status, corroborating_sources=0, association_only=False),
             provenance=[e.ref for e in finding.evidence],
-            note="grounding extract with a source pointer",
+            note="grounding extract with a source pointer (pointer checked, value not)",
+            value_checked=False,
         )
 
     # --- tool: external reference data, verified by call provenance -----------
@@ -164,6 +260,7 @@ class VerificationService:
             confidence=score(status, corroborating_sources=0, association_only=False),
             provenance=[e.ref for e in finding.evidence],
             note="external tool output (untrusted data); provenance recorded, not re-derived",
+            value_checked=False,
         )
 
     def _corroboration(self, finding: Finding, retrieval: list[Finding]) -> int:
@@ -189,6 +286,8 @@ class VerificationService:
         recomputed: float | None,
         corroboration: int,
         note: str,
+        *,
+        value_checked: bool = False,
     ) -> VerifiedClaim:
         return VerifiedClaim(
             claim=finding.claim,
@@ -207,4 +306,6 @@ class VerificationService:
             corroborating_sources=corroboration,
             provenance=[e.ref for e in finding.evidence],
             note=note,
+            value_checked=value_checked,
+            detail=dict(finding.detail),
         )

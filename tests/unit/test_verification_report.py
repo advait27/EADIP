@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from eadip.verification.confidence import score
 from eadip.verification.models import (
+    NOTE_NOT_RECOMPUTED,
     Recommendation,
     VerificationReport,
     VerificationStatus,
@@ -103,3 +104,43 @@ async def test_executive_brief_flags_conflicts_and_associations() -> None:
     assert any("association" in lim.lower() for lim in brief.limitations)
     assert any("conflicting" in lim.lower() for lim in brief.limitations)
     assert "claims" in brief.drill_down and "queries" in brief.drill_down
+
+
+def test_brief_states_what_verification_actually_checked() -> None:
+    claims = [
+        VerifiedClaim(
+            claim="EMEA gross margin fell by 230",
+            source="analytics",
+            kind="headline",
+            status=VerificationStatus.VERIFIED,
+            method="recompute",
+            confidence=0.7,
+            value_checked=True,
+        ),
+        VerifiedClaim(
+            claim="reproduced only",
+            source="analytics",
+            kind="driver",
+            status=VerificationStatus.UNVERIFIED,
+            method="requery",
+            confidence=0.1,
+            note=NOTE_NOT_RECOMPUTED,
+        ),
+        VerifiedClaim(
+            claim="memo",
+            source="retrieval",
+            kind="passage",
+            status=VerificationStatus.VERIFIED,
+            method="source_extract",
+            confidence=0.7,
+        ),
+    ]
+    brief = build_executive_brief("q", VerificationReport.from_claims(claims), [])
+    text = " ".join(brief.assumptions)
+    # No claim of independent re-derivation: same query, same warehouse.
+    assert "independently re-derived" not in text
+    assert "same warehouse" in text and "not whether the query answers the question" in text
+    assert "source pointer" in text  # retrieval/tool are pointer-grounded
+    lims = " ".join(brief.limitations)
+    assert "1 analytics claim(s) are unverified" in lims
+    assert "1 of those re-ran successfully" in lims

@@ -17,7 +17,7 @@ from eadip.orchestrator.state import RunState
 
 
 class StubInterpreter:
-    async def interpret(self, question: str) -> Goal:
+    async def interpret(self, question: str, *, tenant_id: object = None) -> Goal:
         return Goal(objective=question, metrics=["margin"], complexity="deep")
 
 
@@ -82,6 +82,8 @@ async def test_repeat_question_reuses_prior_plan() -> None:
     second_events = [e async for e in svc.stream(second)]
     types = [e.type for e in second_events]
     assert "plan.reused" in types and "plan.created" not in types
+    reused = next(e for e in second_events if e.type == "plan.reused")
+    assert reused.data["produced_by"] == "memory"  # not mislabelled as planner output
     assert planner.calls == 1  # planner was not consulted again
     assert second.status is RunStatus.DONE
     assert types.count("step.completed") == 1  # the reused plan still executed

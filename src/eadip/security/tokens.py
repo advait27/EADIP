@@ -33,5 +33,20 @@ class ServiceTokenIssuer:
         }
         return jwt.encode(claims, self._key, algorithm="HS256")
 
+    def mint_claims(self, claims: dict[str, Any], *, ttl_s: int | None = None) -> str:
+        """Sign an arbitrary claim set (e.g. a scoped share link). ``iss``/``iat``/
+        ``exp`` are set here; callers add their own scope so ``verify`` output can
+        be checked for the exact purpose it was minted for."""
+        now = datetime.now(UTC)
+        payload: dict[str, Any] = {
+            **claims,
+            "iss": self._issuer,
+            "iat": int(now.timestamp()),
+            "exp": int(
+                (now + timedelta(seconds=self._ttl_s if ttl_s is None else ttl_s)).timestamp()
+            ),
+        }
+        return jwt.encode(payload, self._key, algorithm="HS256")
+
     def verify(self, token: str) -> dict[str, Any]:
         return jwt.decode(token, self._key, algorithms=["HS256"], issuer=self._issuer)

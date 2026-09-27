@@ -102,3 +102,15 @@ per-vertical sign-off).
 Gate: ruff + format + mypy (158 files) + pytest (274 passed, 15 skipped) +
 eval 6/6 (66 claims, 100% coverage/grounding) + safety 6/6 + reliability 6/6 +
 load (100 users: 0% errors, read-path p95 < 2 s) + bandit 0 + pip-audit 0 — GREEN.
+
+## Amendment (2026-09-27): what the coverage gate measured
+
+The "verified coverage" gate above counted claims whose method was not `none`.
+An audit showed this is near-tautological: analytics claims that could not be
+recomputed (or carried no magnitude) were still labelled `verified`, and
+retrieval/tool claims are verified by a source pointer. The 100% figures above
+are therefore not evidence of correctness. From this amendment, those claims
+are `unverified`, every claim records `value_checked`, and the gate is
+**checked coverage**: the share of analytics claims whose label rested on a
+value comparison. Pointer-grounded retrieval/tool claims are reported
+separately. The earlier numbers stand as a record of what was measured.

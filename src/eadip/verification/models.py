@@ -16,6 +16,12 @@ class VerificationStatus(StrEnum):
     CONFLICTING = "conflicting"  # re-derivation disagrees — never silently reconciled
 
 
+# Notes for an analytics claim whose query re-ran but whose number was not
+# compared (UNVERIFIED, value_checked False) — the report counts these.
+NOTE_NOT_RECOMPUTED = "source query reproduced; value not independently recomputed"
+NOTE_NO_MAGNITUDE = "claim carries no magnitude to compare"
+
+
 class VerifiedClaim(BaseModel):
     claim: str
     source: str  # "analytics" | "retrieval" | "tool"
@@ -29,6 +35,13 @@ class VerifiedClaim(BaseModel):
     corroborating_sources: int = 0
     provenance: list[str] = Field(default_factory=list)  # SQL / source_ref pointers
     note: str = ""
+    # True only when the label rested on comparing a re-derived value with the
+    # claimed one. False for pointer-grounded (retrieval/tool) claims, for a
+    # reproduced query whose number could not be recomputed, and for failures.
+    value_checked: bool = False
+    # The finding's re-derivation recipe (Glass Box): lets a reader recompute the
+    # number from the source rows without joining back to the run's findings.
+    detail: dict = Field(default_factory=dict)
 
 
 class VerificationReport(BaseModel):
@@ -36,14 +49,27 @@ class VerificationReport(BaseModel):
     verified: int = 0
     unverified: int = 0
     conflicting: int = 0
+    # table -> sha256 of the tenant's rows (canonical form, see
+    # verification/commitment.py) as read at verification time. Lets the evidence
+    # bundle detect rows that changed between verification and sharing.
+    snapshot_commitments: dict[str, str] = Field(default_factory=dict)
+    snapshot_notes: list[str] = Field(default_factory=list)  # tables not committed, and why
 
     @classmethod
-    def from_claims(cls, claims: list[VerifiedClaim]) -> VerificationReport:
+    def from_claims(
+        cls,
+        claims: list[VerifiedClaim],
+        *,
+        snapshot_commitments: dict[str, str] | None = None,
+        snapshot_notes: list[str] | None = None,
+    ) -> VerificationReport:
         return cls(
             claims=claims,
             verified=sum(c.status == VerificationStatus.VERIFIED for c in claims),
             unverified=sum(c.status == VerificationStatus.UNVERIFIED for c in claims),
             conflicting=sum(c.status == VerificationStatus.CONFLICTING for c in claims),
+            snapshot_commitments=dict(snapshot_commitments or {}),
+            snapshot_notes=list(snapshot_notes or []),
         )
 
 
@@ -53,6 +79,10 @@ class Recommendation(BaseModel):
     impact: float  # magnitude the action addresses
     confidence: float
     based_on: list[str] = Field(default_factory=list)  # claim(s) this rests on
+    # Provenance (never taken from model JSON — stamped after validation):
+    # "llm" | "heuristic" | "heuristic_fallback" (an LLM recommender fell back).
+    produced_by: str = "heuristic"
+    fallback_reason: str | None = None
 
 
 class ExecutiveBrief(BaseModel):

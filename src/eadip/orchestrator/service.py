@@ -101,7 +101,9 @@ class OrchestratorService:
         # INTERPRET (skipped when resuming a checkpoint that already has a goal).
         if state.goal is None:
             state.status = RunStatus.PLANNING
-            state.goal = await self._interpreter.interpret(state.question)
+            state.goal = await self._interpreter.interpret(
+                state.question, tenant_id=state.tenant_id
+            )
             await self._cp.save(state)
             yield Event(type="goal.interpreted", data=state.goal.model_dump())
 
@@ -136,6 +138,9 @@ class OrchestratorService:
                         "iteration": state.iterations,
                         "rationale": new_plan.rationale,
                         "reused": reused is not None,  # from episodic memory (FR-045)
+                        # Which backend planned it — a trace must show if the AI ran.
+                        "produced_by": new_plan.produced_by,
+                        "fallback_reason": new_plan.fallback_reason,
                         "steps": [
                             {"id": s.id, "kind": s.kind, "description": s.description}
                             for s in new_plan.steps
@@ -243,7 +248,12 @@ class OrchestratorService:
             await self._cp.save(state)
             yield Event(
                 type="reflection",
-                data={"sufficient": reflection.sufficient, "gaps": reflection.gaps},
+                data={
+                    "sufficient": reflection.sufficient,
+                    "gaps": reflection.gaps,
+                    "produced_by": reflection.produced_by,
+                    "fallback_reason": reflection.fallback_reason,
+                },
             )
             if reflection.sufficient or not reflection.should_replan:
                 break
@@ -264,6 +274,7 @@ class OrchestratorService:
                 stop_reason=state.stop_reason,
             )
             state.verified_claims = report.claims
+            state.snapshot_commitments = dict(report.snapshot_commitments)
             state.brief = brief
             await self._cp.save(state)
             for c in report.claims:
@@ -282,6 +293,7 @@ class OrchestratorService:
                     "verified": report.verified,
                     "unverified": report.unverified,
                     "conflicting": report.conflicting,
+                    "snapshot_commitments": dict(report.snapshot_commitments),
                 },
             )
             for rec in brief.recommendations:
@@ -334,7 +346,11 @@ class OrchestratorService:
         if episode is None or not episode.plan_steps:
             return None
         steps = [PlanStep.model_validate(s) for s in episode.plan_steps]
-        return Plan(steps=steps, rationale=f"reused prior plan (episode hits={episode.hits})")
+        return Plan(
+            steps=steps,
+            rationale=f"reused prior plan (episode hits={episode.hits})",
+            produced_by="memory",
+        )
 
     # --- governed autonomy (Phase 9) -----------------------------------------
     async def _preflight(self, step: PlanStep, state: RunState) -> ProposedAction | None:

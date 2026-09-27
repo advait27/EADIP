@@ -27,6 +27,7 @@ from eadip.verification.factory import build_reporter
 
 if TYPE_CHECKING:
     from eadip.agents.llm import InstructionProvider
+    from eadip.ingestion.datasets import DatasetVocabulary
     from eadip.mcp.executor import ToolExecutor
     from eadip.memory.agent import MemoryAgent
     from eadip.platform.prompts import PromptRegistry
@@ -46,7 +47,10 @@ def _instruction_provider(prompts: PromptRegistry | None, name: str) -> Instruct
 
 
 def build_agents(
-    settings: Settings, *, prompts: PromptRegistry | None = None
+    settings: Settings,
+    *,
+    prompts: PromptRegistry | None = None,
+    vocabulary: DatasetVocabulary | None = None,
 ) -> tuple[GoalInterpreter, Planner, ReflectionAgent]:
     if settings.planner_backend == "llm":
         from eadip.adapters.litellm_client import LiteLLMClient
@@ -63,6 +67,7 @@ def build_agents(
                 client,
                 routing.route(TaskKind.INTERPRET).model,
                 instruction_provider=_instruction_provider(prompts, "agent/interpreter"),
+                vocabulary=vocabulary,
             ),
             LLMPlanner(
                 client,
@@ -75,7 +80,7 @@ def build_agents(
                 instruction_provider=_instruction_provider(prompts, "agent/reflection"),
             ),
         )
-    return HeuristicGoalInterpreter(), HeuristicPlanner(), HeuristicReflection()
+    return HeuristicGoalInterpreter(vocabulary), HeuristicPlanner(), HeuristicReflection()
 
 
 def build_orchestrator(
@@ -89,7 +94,12 @@ def build_orchestrator(
     memory: MemoryAgent | None = None,
     prompts: PromptRegistry | None = None,
 ) -> OrchestratorService:
-    interpreter, planner, reflection = build_agents(settings, prompts=prompts)
+    # Uploaded datasets (Glass Box) are part of what a question can mean: the
+    # DuckDB warehouse's registry doubles as the tenant-scoped vocabulary.
+    vocabulary = getattr(warehouse, "datasets", None)
+    interpreter, planner, reflection = build_agents(
+        settings, prompts=prompts, vocabulary=vocabulary
+    )
     executors: dict[str, Executor] = {
         "retrieve": RetrievalExecutor(retrieval_service),
         "analyze": AnalyticsExecutor(analytics_service),

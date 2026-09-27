@@ -29,9 +29,22 @@ class ColumnSchema:
 class TableSchema:
     name: str
     columns: tuple[ColumnSchema, ...]
+    # Interpretation hints for uploaded datasets (Glass Box). All optional so the
+    # demo/finance schema is unchanged: the time axis, candidate driver
+    # dimensions by ascending cardinality, and small value sets per text column
+    # (so a filter value can be lifted from a question without touching data).
+    period_column: str | None = None
+    dimensions: tuple[str, ...] = ()
+    sample_values: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     def column_names(self) -> frozenset[str]:
         return frozenset(c.name.lower() for c in self.columns)
+
+    def numeric_columns(self) -> tuple[str, ...]:
+        return tuple(c.name for c in self.columns if c.is_numeric)
+
+    def values_for(self, column: str) -> tuple[str, ...]:
+        return next((v for c, v in self.sample_values if c == column), ())
 
 
 @dataclass(frozen=True)

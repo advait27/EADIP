@@ -12,6 +12,7 @@ from typing import Annotated
 from fastapi import Depends, HTTPException
 
 from eadip.adapters.memory_audit_log import InMemoryAuditLog
+from eadip.adapters.memory_event_log import InMemoryEventLog
 from eadip.adapters.memory_run_repository import InMemoryRunRepository
 from eadip.adapters.postgres import Database
 from eadip.adapters.postgres_audit_log import PostgresAuditLog
@@ -30,8 +31,11 @@ from eadip.mcp.registry import McpManager
 from eadip.memory.agent import MemoryAgent
 from eadip.memory.factory import build_memory_agent
 from eadip.orchestrator.checkpoint import Checkpointer, InMemoryCheckpointer
+from eadip.orchestrator.executor import RunExecutor
 from eadip.orchestrator.factory import build_orchestrator
+from eadip.orchestrator.models import Event
 from eadip.orchestrator.service import OrchestratorService
+from eadip.orchestrator.state import RunState
 from eadip.platform.budgets import BudgetLedger
 from eadip.platform.factory import (
     build_budget_ledger,
@@ -43,11 +47,17 @@ from eadip.platform.factory import (
     build_routing_policy,
 )
 from eadip.platform.flags import FeatureFlagService
-from eadip.platform.notifications import InMemoryChannel, NotificationService
+from eadip.platform.models import Notification, NotificationKind
+from eadip.platform.notifications import (
+    InMemoryChannel,
+    NotificationService,
+    notifications_from_event,
+)
 from eadip.platform.prompts import PromptRegistry
 from eadip.platform.ratelimit import ConcurrencyGate
 from eadip.platform.residency import ResidencyPolicy
 from eadip.platform.routing import ModelRoutingPolicy
+from eadip.ports.events import EventLog, LoggedEvent
 from eadip.ports.graph import KnowledgeGraph
 from eadip.ports.repositories import RunRepository
 from eadip.ports.vector_store import VectorStore
@@ -58,6 +68,7 @@ from eadip.security.audit import AuditLog
 from eadip.security.identity import Identity
 from eadip.security.policy import PolicyDecisionPoint
 from eadip.security.rbac import default_catalog
+from eadip.security.tokens import ServiceTokenIssuer
 from eadip.security.vault import EnvSecretsProvider, SecretsProvider, StaticSecretsProvider
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -85,6 +96,15 @@ def get_secrets_provider() -> SecretsProvider:
             {s.service_jwt_secret_key: "dev-insecure-service-jwt-key-do-not-use-in-prod"}
         )
     return EnvSecretsProvider()
+
+
+@lru_cache
+def get_token_issuer() -> ServiceTokenIssuer:
+    """Signs service JWTs and scoped share links with the vault-held key."""
+    s = get_settings()
+    return ServiceTokenIssuer(
+        get_secrets_provider().require(s.service_jwt_secret_key), ttl_s=s.service_jwt_ttl_s
+    )
 
 
 @lru_cache
@@ -253,7 +273,70 @@ def get_orchestrator() -> OrchestratorService:
     )
 
 
+@lru_cache
+def get_event_log() -> EventLog:
+    # Process-wide: the executor appends, every stream/replay/share reads.
+    return InMemoryEventLog(max_runs=get_settings().event_log_max_runs)
+
+
+async def _notify_and_charge(state: RunState, event: LoggedEvent) -> None:
+    """Executor hook (Glass Box): the two side effects that used to live in the
+    SSE route — notification fan-out on approval/completion/anomaly events, and
+    charging the run's final cost to the tenant budget on ``run.done``."""
+    notifications = get_notification_service()
+    plain = Event(type=event.type, data=event.data)
+    for note in notifications_from_event(state.tenant_id, state.run_id, plain):
+        await notifications.publish(note)
+    if event.type == "run.done":
+        budget = await get_budget_ledger().charge(
+            state.tenant_id, float(event.data.get("cost_usd", 0.0))
+        )
+        if budget.exhausted:
+            await notifications.publish(
+                Notification(
+                    tenant_id=state.tenant_id,
+                    kind=NotificationKind.BUDGET_EXHAUSTED,
+                    severity="warning",
+                    title="Monthly budget exhausted — new runs will be refused",
+                    body=f"spent ${budget.spent_usd:g} of ${budget.monthly_cap_usd:g}",
+                    run_id=state.run_id,
+                )
+            )
+
+
+@lru_cache
+def get_run_executor() -> RunExecutor:
+    return RunExecutor(
+        orchestrator=get_orchestrator(),
+        checkpointer=get_checkpointer(),
+        event_log=get_event_log(),
+        gate=get_concurrency_gate(),
+        hooks=[_notify_and_charge],
+    )
+
+
+async def _event_log_dep() -> EventLog:
+    # Async on purpose: FastAPI runs *sync* dependencies in a threadpool, and
+    # concurrent cold-start requests can each miss the lru_cache and build their
+    # own instance (lru_cache does not lock around the factory call). Stateful
+    # singletons must be resolved on the event loop, where this cannot race.
+    return get_event_log()
+
+
+async def _run_executor_dep() -> RunExecutor:
+    return get_run_executor()
+
+
+def warm_singletons() -> None:
+    """Build the stateful process-wide services once, up front (lifespan)."""
+    get_run_executor()
+
+
 RunRepositoryDep = Annotated[RunRepository, Depends(get_run_repository)]
+TokenIssuerDep = Annotated[ServiceTokenIssuer, Depends(get_token_issuer)]
+WarehouseDep = Annotated[Warehouse, Depends(get_warehouse)]
+EventLogDep = Annotated[EventLog, Depends(_event_log_dep)]
+RunExecutorDep = Annotated[RunExecutor, Depends(_run_executor_dep)]
 AuditLogDep = Annotated[AuditLog, Depends(get_audit_log)]
 PdpDep = Annotated[PolicyDecisionPoint, Depends(get_pdp)]
 RetrievalServiceDep = Annotated[RetrievalService, Depends(get_retrieval_service)]

@@ -82,6 +82,7 @@ async def analyze(
                     "rows": q.row_count,
                     "truncated": q.truncated,
                     "attempts": q.attempts,
+                    "generator": q.generator,
                 },
             )
         )
@@ -125,6 +126,7 @@ async def analyze(
                 row_count=q.row_count,
                 truncated=q.truncated,
                 attempts=q.attempts,
+                generator=q.generator,
             )
             for q in result.queries
         ],

@@ -17,7 +17,7 @@ from eadip.orchestrator.state import RunState
 
 
 class StubInterpreter:
-    async def interpret(self, question: str) -> Goal:
+    async def interpret(self, question: str, *, tenant_id: object = None) -> Goal:
         return Goal(objective=question, metrics=["margin"], entities=["EMEA"], complexity="deep")
 
 
@@ -229,3 +229,98 @@ async def test_checkpoint_persisted_each_node() -> None:
     assert loaded is not None
     assert loaded.status == RunStatus.DONE
     assert set(loaded.completed_step_ids) == {"a", "b"}
+
+
+async def test_events_carry_which_backend_produced_each_output() -> None:
+    """A trace must show whether the AI ran: goal, plan, reflection and the
+    brief's recommendations each carry produced_by (+ fallback_reason)."""
+    from eadip.verification.models import (
+        ExecutiveBrief,
+        Recommendation,
+        VerificationReport,
+        VerificationStatus,
+        VerifiedClaim,
+    )
+
+    class FallbackInterpreter:
+        async def interpret(self, question: str, *, tenant_id: object = None) -> Goal:
+            return Goal(
+                objective=question,
+                metrics=["margin"],
+                produced_by="heuristic_fallback",
+                fallback_reason="llm_error: down",
+            )
+
+    class LLMLabelledPlanner:
+        async def plan(self, goal: Goal, gaps: list[str]) -> Plan:
+            steps = [PlanStep(id="a", kind="x", description="step a")]
+            return Plan(steps=steps, rationale="r", produced_by="llm")
+
+    class FallbackReflection:
+        async def reflect(self, goal, findings, results) -> Reflection:  # type: ignore[no-untyped-def]
+            return Reflection(
+                sufficient=True,
+                produced_by="heuristic_fallback",
+                fallback_reason="unparseable_json: x",
+            )
+
+    class Reporter:
+        async def produce(self, findings, *, question, **_kw):  # type: ignore[no-untyped-def]
+            claim = VerifiedClaim(
+                claim="c",
+                source="analytics",
+                status=VerificationStatus.VERIFIED,
+                method="recompute",
+                confidence=0.8,
+            )
+            rec = Recommendation(
+                action="act",
+                rationale="r",
+                impact=1.0,
+                confidence=0.8,
+                produced_by="heuristic_fallback",
+                fallback_reason="invalid_shape: x",
+            )
+            brief = ExecutiveBrief(
+                question=question, headline="h", overall_confidence=0.8, recommendations=[rec]
+            )
+            return VerificationReport.from_claims([claim]), brief
+
+    svc = OrchestratorService(
+        interpreter=FallbackInterpreter(),
+        planner=LLMLabelledPlanner(),
+        router=Router(),
+        reflection=FallbackReflection(),
+        executors={"x": StubExecutor()},
+        checkpointer=InMemoryCheckpointer(),
+        reporter=Reporter(),  # type: ignore[arg-type]
+    )
+    events = {e.type: e.data async for e in svc.stream(_state())}
+
+    assert events["goal.interpreted"]["produced_by"] == "heuristic_fallback"
+    assert events["goal.interpreted"]["fallback_reason"] == "llm_error: down"
+    assert events["plan.created"]["produced_by"] == "llm"
+    assert events["plan.created"]["fallback_reason"] is None
+    assert events["reflection"]["produced_by"] == "heuristic_fallback"
+    assert events["reflection"]["fallback_reason"] == "unparseable_json: x"
+    assert events["recommendation"]["produced_by"] == "heuristic_fallback"
+    assert events["recommendation"]["fallback_reason"] == "invalid_shape: x"
+    assert events["brief"]["recommendations"][0]["produced_by"] == "heuristic_fallback"
+
+
+async def test_old_checkpoint_without_provenance_still_loads() -> None:
+    """Checkpoints written before produced_by existed must resume (defaults)."""
+    import json
+
+    state = _state()
+    state.goal = Goal(objective="q")
+    state.plan = Plan(steps=[PlanStep(id="a", kind="x", description="d")])
+    state.reflections.append(Reflection(sufficient=True))
+    raw = json.loads(state.model_dump_json())
+    for obj in (raw["goal"], raw["plan"], *raw["reflections"]):
+        obj.pop("produced_by")
+        obj.pop("fallback_reason")
+    loaded = RunState.model_validate_json(json.dumps(raw))
+    assert loaded.goal is not None and loaded.goal.produced_by == "heuristic"
+    assert loaded.plan is not None and loaded.plan.produced_by == "heuristic"
+    assert loaded.reflections[0].fallback_reason is None

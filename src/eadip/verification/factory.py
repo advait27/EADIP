@@ -12,10 +12,13 @@ from eadip.verification.verifier import VerificationService
 def build_recommender(settings: Settings) -> Recommender:
     if settings.recommendation_backend == "llm":
         from eadip.adapters.litellm_client import LiteLLMClient
+        from eadip.platform.factory import build_routing_policy
+        from eadip.platform.models import TaskKind
         from eadip.verification.recommend import LLMRecommender
 
         client = LiteLLMClient(settings.default_model, settings.model_api_base)
-        return LLMRecommender(client, settings.default_model, settings.max_recommendations)
+        model = build_routing_policy(settings).route(TaskKind.RECOMMEND).model
+        return LLMRecommender(client, model, settings.max_recommendations)
     return HeuristicRecommender(settings.max_recommendations)
 
 

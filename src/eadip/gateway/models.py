@@ -86,6 +86,7 @@ class QueryItem(BaseModel):
     row_count: int
     truncated: bool
     attempts: int
+    generator: str = "unknown"  # which SqlGenerator wrote it: "template" | "llm"
 
 
 class AnalyzeResponse(BaseModel):
@@ -97,6 +98,74 @@ class AnalyzeResponse(BaseModel):
     findings: list[FindingItem]
     queries: list[QueryItem]
     warnings: list[str]
+
+
+class ClaimCounts(BaseModel):
+    verified: int = 0
+    unverified: int = 0
+    conflicting: int = 0
+
+
+class RunStatusResponse(BaseModel):
+    """Where a run is right now (Glass Box): enough for a UI to render after a
+    refresh without opening the stream."""
+
+    id: UUID
+    question: str
+    status: str
+    running: bool  # executing in this process right now
+    iterations: int
+    cost_usd: float
+    elapsed_s: float
+    stop_reason: str | None = None
+    findings: int
+    claims: ClaimCounts
+    pending_approvals: int
+    has_brief: bool
+    last_seq: int  # head of the event log (use as Last-Event-ID)
+
+
+class TimelineResponse(BaseModel):
+    run_id: UUID
+    question: str
+    status: str
+    events: list[dict]  # serialised LoggedEvent: seq, at, type, data
+
+
+class ShareResponse(BaseModel):
+    token: str
+    url: str  # the replay page (UI when built, else the API payload)
+    api_url: str
+    expires_at: datetime
+
+
+class SharePayload(BaseModel):
+    """A read-only replay of a run for anyone holding the link."""
+
+    run_id: UUID
+    question: str
+    status: str
+    expires_at: datetime
+    timeline: list[dict]
+    graph: dict
+    brief: dict | None = None
+    evidence_bundle_url: str
+
+
+class DatasetColumn(BaseModel):
+    name: str
+    type: str
+
+
+class DatasetItem(BaseModel):
+    """An uploaded dataset (Glass Box): what the question can name."""
+
+    name: str  # logical name to use in questions and the one provenance SQL shows
+    table: str  # the physical, tenant-scoped table
+    columns: list[DatasetColumn]
+    row_count: int
+    period_column: str | None = None
+    dimensions: list[str] = Field(default_factory=list)
 
 
 class ReportResponse(BaseModel):

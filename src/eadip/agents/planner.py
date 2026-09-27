@@ -147,15 +147,35 @@ class LLMPlanner:
         self._fallback = HeuristicPlanner()
 
     async def plan(self, goal: Goal, gaps: list[str]) -> Plan:
-        from eadip.agents.llm import complete_json, resolve_instruction
+        from eadip.agents.llm import (
+            PRODUCED_BY_FALLBACK,
+            PRODUCED_BY_LLM,
+            complete_json_traced,
+            log_fallback,
+            resolve_instruction,
+        )
 
         instruction = await resolve_instruction(self._instruction_provider, PLANNER_INSTRUCTION)
-        prompt = f"{instruction}\nGoal: {goal.model_dump_json()}\nGaps to close: {gaps}"
-        data = await complete_json(self._client, prompt, model=self._model)
-        if data is None:
-            return await self._fallback.plan(goal, gaps)
-        try:
+        goal_json = goal.model_dump_json(exclude={"produced_by", "fallback_reason"})
+        prompt = f"{instruction}\nGoal: {goal_json}\nGaps to close: {gaps}"
+
+        def validate(data: dict) -> Plan:
             plan = Plan.model_validate(data)
-        except Exception:  # noqa: BLE001
-            return await self._fallback.plan(goal, gaps)
-        return plan if plan.steps else await self._fallback.plan(goal, gaps)
+            if not plan.steps:
+                raise ValueError("plan has no steps")
+            if any(s.kind not in ("retrieve", "analyze", "tool") for s in plan.steps):
+                raise ValueError("step kind must be retrieve, analyze or tool")
+            return plan
+
+        plan, reason = await complete_json_traced(
+            self._client, prompt, model=self._model, validate=validate
+        )
+        if plan is None:
+            reason = reason or "no model output"
+            log_fallback("planner", reason)
+            fallback = await self._fallback.plan(goal, gaps)
+            return fallback.model_copy(
+                update={"produced_by": PRODUCED_BY_FALLBACK, "fallback_reason": reason}
+            )
+        # Stamped after validation: a produced_by the model emitted is discarded.
+        return plan.model_copy(update={"produced_by": PRODUCED_BY_LLM, "fallback_reason": None})

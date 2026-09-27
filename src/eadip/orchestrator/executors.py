@@ -96,6 +96,7 @@ class AnalyticsExecutor:
             AnalyticsRequest(
                 tenant_id=state.tenant_id,
                 question=str(step.params.get("question", state.question)),
+                table=step.params.get("table"),
                 metric=step.params.get("metric"),
                 dimension=step.params.get("dimension"),
                 filter_value=step.params.get("filter_value"),
@@ -103,17 +104,30 @@ class AnalyticsExecutor:
             )
         )
         findings: list[Finding] = []
-        driver_sql = next((q.sql for q in result.queries if q.purpose == "drivers"), None)
-        if result.verified and driver_sql:
+        driver_query = next((q for q in result.queries if q.purpose == "drivers"), None)
+        driver_sql = driver_query.sql if driver_query is not None else None
+        total = result.total if result.total is not None else sum(d.delta for d in result.drivers)
+        # Column roles travel with every finding so re-derivation (server-side
+        # verifier, browser verify panel) never has to guess the time axis.
+        # The SQL generator backend ("template" | "llm") rides along too, so a
+        # trace shows whether a model wrote the query behind each number.
+        source_query = driver_query or (result.queries[0] if result.queries else None)
+        roles = {
+            "period_column": result.period_column,
+            "dimension": result.dimension,
+            "sql_generator": source_query.generator if source_query is not None else None,
+        }
+        has_headline = any(f.kind == "headline" for f in result.findings)
+        if result.verified and driver_sql and not has_headline:
             findings.append(
                 Finding(
                     claim=result.headline,
                     source="analytics",
                     step_id=step.id,
                     kind="headline",
-                    magnitude=sum(d.delta for d in result.drivers),
+                    magnitude=total,
                     evidence=[Evidence(kind="query", ref=driver_sql)],
-                    detail={"total": sum(d.delta for d in result.drivers)},
+                    detail={"total": total, **roles},
                 )
             )
         for f in result.findings:
@@ -126,7 +140,7 @@ class AnalyticsExecutor:
                     magnitude=f.magnitude,
                     association_only=f.association_only,
                     evidence=[Evidence(kind="query", ref=f.evidence_sql, snippet=f.kind)],
-                    detail=dict(f.detail),
+                    detail={**f.detail, **roles},
                 )
             )
         ok = result.verified or bool(result.findings)

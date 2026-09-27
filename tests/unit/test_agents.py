@@ -99,3 +99,26 @@ async def test_reflection_sufficient_and_gaps() -> None:
     assert not insufficient.sufficient
     assert insufficient.should_replan
     assert "no grounding evidence retrieved" in insufficient.gaps
+
+
+async def test_heuristic_agents_label_their_output_heuristic() -> None:
+    from eadip.verification.models import VerificationStatus, VerifiedClaim
+    from eadip.verification.recommend import HeuristicRecommender
+
+    goal = await HeuristicGoalInterpreter().interpret("Why did EMEA margin fall?")
+    plan = await HeuristicPlanner().plan(goal, [])
+    reflection = await HeuristicReflection().reflect(goal, [], [])
+    driver = VerifiedClaim(
+        claim="Hardware contributed -220",
+        source="analytics",
+        kind="driver",
+        status=VerificationStatus.VERIFIED,
+        method="recompute",
+        confidence=0.9,
+        claimed_magnitude=-220.0,
+    )
+    recs = await HeuristicRecommender().recommend("o", [driver])
+    assert recs
+    for out in (goal, plan, reflection, *recs):
+        assert out.produced_by == "heuristic"
+        assert out.fallback_reason is None
