@@ -13,7 +13,7 @@ jobs:
       # Real Postgres so the RLS + append-only integration tests run for real
       # (SEC-08/09); without it those tests skip. Throwaway DB.
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: eadip
           POSTGRES_PASSWORD: eadip
