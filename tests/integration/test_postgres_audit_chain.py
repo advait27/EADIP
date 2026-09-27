@@ -1,48 +1,43 @@
 """Integration tests for the audit hash chain (SEC-08) against real Postgres.
 
 Skipped automatically when no database is reachable, like test_postgres_rls.
-Tampering is simulated the way a privileged attacker would do it: by disabling
-the append-only trigger (the test role owns the table) and editing rows.
+The log is exercised as the least-privilege app role; tampering is simulated
+the way a privileged attacker would do it: as the owner, disabling the
+append-only trigger and editing rows.
 """
 
 from __future__ import annotations
 
-import os
 from uuid import UUID, uuid4
 
-import pytest
 import pytest_asyncio
 
-from eadip.adapters.migrations import apply_migrations
 from eadip.adapters.postgres import Database
 from eadip.adapters.postgres_audit_log import PostgresAuditLog
 from eadip.security.audit import GENESIS_HASH, make_event
-
-DSN = os.environ.get("EADIP_TEST_POSTGRES_DSN", "postgresql://eadip:eadip@localhost:5432/eadip")
+from tests.integration.pg import ADMIN_DSN, app_database
 
 
 @pytest_asyncio.fixture
 async def db() -> Database:
-    database = Database(DSN)
-    try:
-        await database.connect()
-        await database.ping()
-    except Exception:  # connection refused / driver error -> not available here
-        pytest.skip("Postgres not available for integration tests")
-    await apply_migrations(database)
-    async with database.connection() as conn:
-        await conn.execute("TRUNCATE audit_event RESTART IDENTITY")
+    database = await app_database("TRUNCATE audit_event RESTART IDENTITY")
     yield database
     await database.close()
 
 
 async def _tamper(db: Database, tenant_id: UUID, sql: str) -> None:
-    async with db.tenant_connection(tenant_id) as conn:
-        await conn.execute("ALTER TABLE audit_event DISABLE TRIGGER audit_event_append_only")
-        try:
-            await conn.execute(sql)
-        finally:
-            await conn.execute("ALTER TABLE audit_event ENABLE TRIGGER audit_event_append_only")
+    """Edit rows as the owner with the trigger off (the app role cannot)."""
+    admin = Database(ADMIN_DSN)
+    await admin.connect()
+    try:
+        async with admin.tenant_connection(tenant_id) as conn:
+            await conn.execute("ALTER TABLE audit_event DISABLE TRIGGER audit_event_append_only")
+            try:
+                await conn.execute(sql)
+            finally:
+                await conn.execute("ALTER TABLE audit_event ENABLE TRIGGER audit_event_append_only")
+    finally:
+        await admin.close()
 
 
 async def test_chain_verifies_after_jsonb_round_trip(db: Database) -> None:
