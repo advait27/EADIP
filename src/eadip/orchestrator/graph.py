@@ -44,7 +44,9 @@ class EvidenceGraph(BaseModel):
 
 
 def evidence_id(kind: str, ref: str) -> str:
-    return "evidence:" + hashlib.sha1(f"{kind}:{ref}".encode()).hexdigest()[:12]  # noqa: S324 - id, not security
+    # An id, not security: usedforsecurity=False keeps the digest (and ids) unchanged.
+    digest = hashlib.sha1(f"{kind}:{ref}".encode(), usedforsecurity=False).hexdigest()
+    return "evidence:" + digest[:12]
 
 
 def _clip(text: str, n: int = 90) -> str:

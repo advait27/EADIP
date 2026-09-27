@@ -6,19 +6,16 @@ runs these with a Postgres service. Set EADIP_TEST_POSTGRES_DSN to override.
 
 from __future__ import annotations
 
-import os
 from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
 
 from eadip.adapters.demo_finance import demo_finance_rows
-from eadip.adapters.migrations import apply_migrations
 from eadip.adapters.postgres import Database
 from eadip.adapters.postgres_warehouse import PostgresWarehouse
 from eadip.ports.warehouse import WarehouseError
-
-DSN = os.environ.get("EADIP_TEST_POSTGRES_DSN", "postgresql://eadip:eadip@localhost:5432/eadip")
+from tests.integration.pg import app_database
 
 _INSERT = (
     "INSERT INTO finance_metrics "
@@ -29,18 +26,10 @@ _INSERT = (
 
 @pytest_asyncio.fixture
 async def db() -> Database:
-    database = Database(DSN)
-    try:
-        await database.connect()
-        await database.ping()
-    except Exception:
-        pytest.skip("Postgres not available for integration tests")
-    await apply_migrations(database)
-    async with database.connection() as conn:
-        await conn.execute(
-            "TRUNCATE finance_metrics, run, audit_event, user_role, permission, "
-            "app_user, role, tenant RESTART IDENTITY CASCADE"
-        )
+    database = await app_database(
+        "TRUNCATE finance_metrics, run, audit_event, user_role, permission, "
+        "app_user, role, tenant RESTART IDENTITY CASCADE"
+    )
     yield database
     await database.close()
 

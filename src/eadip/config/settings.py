@@ -26,7 +26,10 @@ class Settings(BaseSettings):
     log_json: bool = True
 
     # Stores (vault-managed in prod; .env for local dev only).
-    postgres_dsn: SecretStr = SecretStr("postgresql://eadip:eadip@localhost:5432/eadip")
+    # The app connects as the least-privilege role (RLS binds it); migrations run
+    # as the table owner via postgres_admin_dsn (falls back to postgres_dsn).
+    postgres_dsn: SecretStr = SecretStr("postgresql://eadip_app:eadip_app@localhost:5432/eadip")
+    postgres_admin_dsn: SecretStr | None = None
     redis_url: SecretStr = SecretStr("redis://localhost:6379/0")
     qdrant_url: str = "http://localhost:6333"
     neo4j_uri: str = "bolt://localhost:7687"

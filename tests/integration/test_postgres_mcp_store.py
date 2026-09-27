@@ -3,13 +3,10 @@ isolated by RLS (Phase 8). Skipped when no database is reachable; CI runs it."""
 
 from __future__ import annotations
 
-import os
 from uuid import UUID, uuid4
 
-import pytest
 import pytest_asyncio
 
-from eadip.adapters.migrations import apply_migrations
 from eadip.adapters.postgres import Database
 from eadip.adapters.postgres_mcp_store import PostgresServerStore
 from eadip.mcp.models import (
@@ -21,21 +18,12 @@ from eadip.mcp.models import (
     ToolSpec,
 )
 from eadip.security.rbac import Effect
-
-DSN = os.environ.get("EADIP_TEST_POSTGRES_DSN", "postgresql://eadip:eadip@localhost:5432/eadip")
+from tests.integration.pg import app_database
 
 
 @pytest_asyncio.fixture
 async def db() -> Database:
-    database = Database(DSN)
-    try:
-        await database.connect()
-        await database.ping()
-    except Exception:
-        pytest.skip("Postgres not available for integration tests")
-    await apply_migrations(database)
-    async with database.connection() as conn:
-        await conn.execute("TRUNCATE mcp_server, tenant RESTART IDENTITY CASCADE")
+    database = await app_database("TRUNCATE mcp_server, tenant RESTART IDENTITY CASCADE")
     yield database
     await database.close()
 

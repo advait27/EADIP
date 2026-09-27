@@ -150,6 +150,11 @@ headers for local work; `oidc` verifies a Bearer JWT against your identity
 provider. Authorization is **deny-by-default** RBAC enforced and audited at
 every route. Tenant isolation is enforced in Postgres itself with **Row-Level
 Security (FORCE)** on every tenant table, and the audit log is append-only.
+RLS does not bind a superuser or a `BYPASSRLS` role, so the app connects as the
+least-privilege role `eadip_app` (`EADIP_POSTGRES_DSN`) while migrations and the
+retention sweep run as the owner (`EADIP_POSTGRES_ADMIN_DSN`). Compose creates
+the role on first init; elsewhere run `deploy/postgres/app_role.sql` after
+`eadip-migrate`. The integration suite asserts its connection is bound by RLS.
 ```bash
 docker compose up -d postgres && uv run eadip-migrate
 EADIP_DATABASE_ENABLED=true make dev

@@ -43,9 +43,17 @@ jobs:
         run: uv run ruff format --check .
       - name: Type-check (mypy)
         run: uv run mypy
+      - name: Create the least-privilege app role (RLS does not bind superusers)
+        env:
+          PGPASSWORD: eadip
+        run: >-
+          psql -h localhost -U eadip -d eadip -v ON_ERROR_STOP=1
+          -c "CREATE ROLE eadip_app LOGIN PASSWORD 'eadip_app' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE"
       - name: Unit + integration tests
         env:
-          EADIP_TEST_POSTGRES_DSN: postgresql://eadip:eadip@localhost:5432/eadip
+          # Migrations/TRUNCATE as the owner; code under test as the app role.
+          EADIP_TEST_POSTGRES_ADMIN_DSN: postgresql://eadip:eadip@localhost:5432/eadip
+          EADIP_TEST_POSTGRES_DSN: postgresql://eadip_app:eadip_app@localhost:5432/eadip
           EADIP_TEST_QDRANT_URL: http://localhost:6333
         run: uv run pytest -q
       # --- Phase 12 hard gates (PRD §13-14, TAD Ch 12/16) — all BLOCKING -------
