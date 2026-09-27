@@ -105,7 +105,9 @@ async def _run(apply: bool) -> int:
         for stmt in plan(settings):
             print(f"  {stmt.artifact:<18} expire rows older than {stmt.cutoff.date()}")
         return 0
-    db = Database(settings.postgres_dsn.get_secret_value())
+    # Cross-tenant maintenance: RLS would hide every row from the app role, so
+    # the sweep runs as the owner (postgres_admin_dsn; falls back to postgres_dsn).
+    db = Database((settings.postgres_admin_dsn or settings.postgres_dsn).get_secret_value())
     await db.connect()
     try:
         results = await sweep(db, settings, apply=apply)

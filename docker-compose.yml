@@ -10,7 +10,8 @@ services:
       EADIP_LOG_JSON: "true"
       EADIP_OTEL_ENABLED: "true"
       EADIP_OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
-      EADIP_POSTGRES_DSN: "postgresql://eadip:eadip@postgres:5432/eadip"
+      EADIP_POSTGRES_DSN: "postgresql://eadip_app:eadip_app@postgres:5432/eadip"
+      EADIP_POSTGRES_ADMIN_DSN: "postgresql://eadip:eadip@postgres:5432/eadip"
       EADIP_REDIS_URL: "redis://redis:6379/0"
       EADIP_QDRANT_URL: "http://qdrant:6333"
       EADIP_NEO4J_URI: "bolt://neo4j:7687"
@@ -31,6 +32,9 @@ services:
       POSTGRES_USER: eadip
       POSTGRES_PASSWORD: eadip
       POSTGRES_DB: eadip
+    volumes:
+      # Least-privilege app role (RLS does not bind the superuser `eadip`).
+      - ./deploy/postgres/initdb:/docker-entrypoint-initdb.d:ro
     ports:
       - "5432:5432"
     healthcheck:

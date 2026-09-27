@@ -44,7 +44,9 @@ def main() -> None:
 
     async def _run() -> None:
         settings = get_settings()
-        db = Database(settings.postgres_dsn.get_secret_value())
+        # Schema changes run as the owner, not the app role (RLS/least privilege).
+        dsn = settings.postgres_admin_dsn or settings.postgres_dsn
+        db = Database(dsn.get_secret_value())
         await db.connect()
         try:
             ran = await apply_migrations(db)

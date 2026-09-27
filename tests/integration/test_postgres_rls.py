@@ -7,36 +7,25 @@ point at a throwaway database.
 
 from __future__ import annotations
 
-import os
 from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
 
-from eadip.adapters.migrations import apply_migrations
 from eadip.adapters.postgres import Database
 from eadip.adapters.postgres_audit_log import PostgresAuditLog
 from eadip.adapters.postgres_run_repository import PostgresRunRepository
 from eadip.domain.entities import Run
 from eadip.security.audit import make_event
-
-DSN = os.environ.get("EADIP_TEST_POSTGRES_DSN", "postgresql://eadip:eadip@localhost:5432/eadip")
+from tests.integration.pg import app_database
 
 
 @pytest_asyncio.fixture
 async def db() -> Database:
-    database = Database(DSN)
-    try:
-        await database.connect()
-        await database.ping()
-    except Exception:  # connection refused / driver error -> not available here
-        pytest.skip("Postgres not available for integration tests")
-    await apply_migrations(database)
-    async with database.connection() as conn:
-        await conn.execute(
-            "TRUNCATE run, audit_event, user_role, permission, app_user, role, tenant "
-            "RESTART IDENTITY CASCADE"
-        )
+    database = await app_database(
+        "TRUNCATE run, audit_event, user_role, permission, app_user, role, tenant "
+        "RESTART IDENTITY CASCADE"
+    )
     yield database
     await database.close()
 
