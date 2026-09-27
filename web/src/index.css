@@ -86,7 +86,7 @@ pre { background: rgba(0,0,0,.35); border: 1px solid var(--line); border-radius:
 .pill.done, .pill.verified { color: var(--ok); border-color: rgba(52,211,153,.4); }
 .pill.executing, .pill.planning, .pill.verifying, .pill.running, .pill.queued { color: var(--accent); border-color: rgba(125,211,252,.4); }
 .pill.awaiting_approval, .pill.unverified, .pill.sampled, .pill.no_magnitude { color: var(--warn); border-color: rgba(251,191,36,.4); }
-.pill.failed, .pill.conflicting, .pill.conflict, .pill.cannot_run { color: var(--bad); border-color: rgba(248,113,113,.4); }
+.pill.failed, .pill.conflicting, .pill.conflict, .pill.cannot_run, .pill.tampered { color: var(--bad); border-color: rgba(248,113,113,.4); }
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 8px; }
 .stat { background: rgba(0,0,0,.2); border-radius: 8px; padding: 8px; }
 .stat b { display: block; font-size: 18px; }

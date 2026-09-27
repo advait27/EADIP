@@ -91,3 +91,14 @@ findings are recorded there).
   Postgres adapters are the production follow-up (ports exist).
 - The demo path is unchanged for existing clients: same event names and
   payloads, plus `id:` on every SSE message.
+
+## Amendment (2026-09-27): what the browser re-check establishes
+
+Item 4 re-runs each claim's SQL over rows the **server supplies** and repeats
+the server's arithmetic; it is not an independent verification of the data.
+Each bundle table now carries a SHA-256 of its rows, and the verifier records a
+commitment to the same rows at verification time, so the browser flags rows
+that changed between verification and sharing (verdict `tampered`). Because the
+commitment comes from the same server, it does not protect against a server
+that lies consistently at verification time; that requires the commitment to be
+published through a channel the server does not control.

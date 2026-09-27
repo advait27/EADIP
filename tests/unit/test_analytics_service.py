@@ -108,6 +108,28 @@ async def test_non_read_only_sql_never_executes() -> None:
     assert wh.calls == []  # the gate blocked it before any execution
 
 
+async def test_sql_artifact_records_which_generator_wrote_it() -> None:
+    from eadip.analytics.sql_generator import LLMSqlGenerator, TemplateSqlGenerator
+
+    wh = FakeWarehouse(query_result(("product_line", "gross_margin"), [("Hardware", 100.0)]))
+    svc = AnalyticsService(
+        warehouse=wh, generator=TemplateSqlGenerator(), cache=NullSqlResultCache()
+    )
+    validator = SqlSafetyValidator(SCHEMA, dialect="duckdb")
+    art, _ = await svc._run(
+        _DRIVER_PLAN, AnalyticsRequest(tenant_id=T, question="q"), SCHEMA, validator
+    )
+    assert art is not None and art.generator == "template"
+    assert LLMSqlGenerator.backend == "llm"
+
+    # A generator that does not declare a backend is recorded as unknown, not guessed.
+    stub_svc = _svc(wh, StubGenerator([_GOOD]))
+    stub_art, _ = await stub_svc._run(
+        _DRIVER_PLAN, AnalyticsRequest(tenant_id=T, question="q"), SCHEMA, validator
+    )
+    assert stub_art is not None and stub_art.generator == "unknown"
+
+
 @pytest.mark.skipif(not _DUCKDB, reason="duckdb (data extra) not installed")
 async def test_end_to_end_metric_movement_with_provenance() -> None:
     from eadip.adapters.duckdb_warehouse import DuckDBWarehouse
@@ -128,6 +150,7 @@ async def test_end_to_end_metric_movement_with_provenance() -> None:
 
     # Provenance: every finding is bound to a query that was actually executed.
     executed = {q.sql for q in result.queries}
+    assert all(q.generator == "template" for q in result.queries)
     assert result.findings
     for f in result.findings:
         assert f.evidence_sql in executed

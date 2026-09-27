@@ -7,6 +7,21 @@ generator and validated by the same gate as any other analytics query — the
 bundle never introduces a new read path. The browser loads the rows into
 DuckDB-WASM, runs each claim's SQL and compares with the claimed magnitude
 using the server's own tolerance.
+
+What the browser check is: an independent re-execution *of rows this server
+supplied*. It confirms the claim's arithmetic over those rows; it cannot show the
+rows are the tenant's real data.
+
+Snapshot commitment. Each table carries ``sha256`` — the hash of its rows as
+served, in the canonical form of ``commitment.py`` — and the bundle carries the
+``snapshot_commitments`` recorded when the run was verified.
+``matches_commitment`` says whether the served rows still hash to the recorded
+value (None when no commitment was recorded, e.g. pre-commitment runs or a
+truncated table). This detects rows that changed between verification and
+sharing, and lets a reader compare against a commitment obtained through another
+channel (e.g. the run's ``verification.summary`` event, or a copy taken at the
+time). It does NOT protect against a server that lies consistently at
+verification time: the commitment comes from the same server as the rows.
 """
 
 from __future__ import annotations
@@ -21,6 +36,7 @@ from eadip.analytics.sql_generator import TemplateSqlGenerator
 from eadip.analytics.sql_validator import SqlSafetyValidator, SqlValidationError
 from eadip.orchestrator.state import RunState
 from eadip.ports.warehouse import Warehouse, WarehouseError
+from eadip.verification.commitment import commit_rows
 
 
 class BundleColumn(BaseModel):
@@ -34,6 +50,9 @@ class BundleTable(BaseModel):
     rows: list[list[Any]]
     row_count: int
     truncated: bool = False  # row cap hit: client-side aggregates are unreliable
+    sha256: str = ""  # canonical hash of ``rows`` as served (commitment.py)
+    # served hash == the commitment recorded at verification; None when none recorded
+    matches_commitment: bool | None = None
 
 
 class BundleClaim(BaseModel):
@@ -60,6 +79,8 @@ class EvidenceBundle(BaseModel):
     claims: list[BundleClaim] = Field(default_factory=list)
     tables: list[BundleTable] = Field(default_factory=list)
     skipped: list[SkippedClaim] = Field(default_factory=list)
+    # table -> sha256 recorded when the run was verified (from the same server)
+    snapshot_commitments: dict[str, str] = Field(default_factory=dict)
 
 
 async def build_evidence_bundle(
@@ -72,7 +93,12 @@ async def build_evidence_bundle(
     max_join_tables: int = 4,
 ) -> EvidenceBundle:
     tenant = state.tenant_id
-    bundle = EvidenceBundle(run_id=state.run_id, rel_tolerance=rel_tolerance, row_cap=row_cap)
+    bundle = EvidenceBundle(
+        run_id=state.run_id,
+        rel_tolerance=rel_tolerance,
+        row_cap=row_cap,
+        snapshot_commitments=dict(getattr(state, "snapshot_commitments", None) or {}),
+    )
     schema = await warehouse.schema(tenant)
     validator = SqlSafetyValidator(schema, dialect="duckdb", max_join_tables=max_join_tables)
 
@@ -124,13 +150,18 @@ async def build_evidence_bundle(
                 if name in c.tables:
                     bundle.skipped.append(SkippedClaim(index=c.index, reason=f"rows: {exc}"))
             continue
+        rows = [list(r) for r in result.rows]
+        digest = commit_rows(rows)
+        committed = bundle.snapshot_commitments.get(table.name)
         bundle.tables.append(
             BundleTable(
                 name=table.name,
                 columns=[BundleColumn(name=c.name, type=c.type) for c in table.columns],
-                rows=[list(r) for r in result.rows],
+                rows=rows,
                 row_count=result.row_count,
                 truncated=result.truncated,
+                sha256=digest,
+                matches_commitment=None if committed is None else digest == committed,
             )
         )
     return bundle

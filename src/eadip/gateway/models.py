@@ -86,6 +86,7 @@ class QueryItem(BaseModel):
     row_count: int
     truncated: bool
     attempts: int
+    generator: str = "unknown"  # which SqlGenerator wrote it: "template" | "llm"
 
 
 class AnalyzeResponse(BaseModel):

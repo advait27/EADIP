@@ -1,7 +1,12 @@
--- 0002_audit_append_only.sql — make audit_event tamper-evident (SEC-08).
--- A BEFORE UPDATE/DELETE trigger rejects any mutation, so the audit trail is
--- insert-only regardless of the connecting role. In production, also REVOKE
--- UPDATE/DELETE from the least-privileged application role as defense in depth.
+-- 0002_audit_append_only.sql — make audit_event append-only (SEC-08).
+-- A BEFORE UPDATE/DELETE row trigger rejects mutation for any role that cannot
+-- change the trigger. It is NOT tamper-evidence: a superuser or the table owner
+-- can disable the trigger (and TRUNCATE is not covered) and rewrite rows without
+-- a trace here. Tamper-evidence for rows written from 0009 on comes from the
+-- per-tenant hash chain (0009_audit_hash_chain.sql), which in turn needs an
+-- externally anchored head hash to detect a consistent rewrite of the chain.
+-- In production, also REVOKE UPDATE/DELETE/TRUNCATE from the least-privileged
+-- application role, and do not let it own the table.
 
 CREATE OR REPLACE FUNCTION audit_event_no_mutate() RETURNS trigger AS $$
 BEGIN

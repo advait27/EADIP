@@ -390,6 +390,7 @@ class AnalyticsService:
                     row_count=result.row_count,
                     truncated=result.truncated,
                     attempts=attempts,
+                    generator=getattr(self._gen, "backend", "unknown"),
                 ),
                 result,
             )

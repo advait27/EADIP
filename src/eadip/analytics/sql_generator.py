@@ -40,6 +40,8 @@ class SqlGenerator(Protocol):
 class TemplateSqlGenerator:
     """Deterministic renderer of a QueryPlan. Always emits a tenant-scoped query."""
 
+    backend = "template"  # recorded on every SqlArtifact (provenance)
+
     async def generate(
         self,
         request: AnalyticsRequest,
@@ -94,6 +96,8 @@ Question: {question}
 class LLMSqlGenerator:
     """Production NL->SQL via a model (lazy ModelClient). Uses the QueryPlan as a
     structured intent description and feeds validator errors back on repair."""
+
+    backend = "llm"  # recorded on every SqlArtifact (provenance)
 
     def __init__(self, client: ModelClient, model: str | None = None) -> None:
         self._client = client

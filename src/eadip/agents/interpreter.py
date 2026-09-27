@@ -112,7 +112,13 @@ class LLMGoalInterpreter:
         self._fallback = HeuristicGoalInterpreter(vocabulary)
 
     async def interpret(self, question: str, *, tenant_id: UUID | None = None) -> Goal:
-        from eadip.agents.llm import complete_json, resolve_instruction
+        from eadip.agents.llm import (
+            PRODUCED_BY_FALLBACK,
+            PRODUCED_BY_LLM,
+            complete_json_traced,
+            log_fallback,
+            resolve_instruction,
+        )
 
         instruction = await resolve_instruction(self._instruction_provider, INTERPRETER_INSTRUCTION)
         prompt = f"{instruction}\nQuestion: {question}"
@@ -121,9 +127,15 @@ class LLMGoalInterpreter:
             if tables:
                 listed = "; ".join(f"{t}({', '.join(cols)})" for t, cols in tables)
                 prompt += f"\nUploaded datasets the question may refer to: {listed}"
-        goal = await complete_json(
+        goal, reason = await complete_json_traced(
             self._client, prompt, model=self._model, validate=Goal.model_validate
         )
         if goal is None:
-            return await self._fallback.interpret(question, tenant_id=tenant_id)
-        return goal
+            reason = reason or "no model output"
+            log_fallback("interpreter", reason)
+            fallback = await self._fallback.interpret(question, tenant_id=tenant_id)
+            return fallback.model_copy(
+                update={"produced_by": PRODUCED_BY_FALLBACK, "fallback_reason": reason}
+            )
+        # Stamped after validation: a produced_by the model emitted is discarded.
+        return goal.model_copy(update={"produced_by": PRODUCED_BY_LLM, "fallback_reason": None})

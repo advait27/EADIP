@@ -73,14 +73,29 @@ class LLMReflection:
     async def reflect(
         self, goal: Goal, findings: list[Finding], step_results: list[StepResult]
     ) -> Reflection:
-        from eadip.agents.llm import complete_json, resolve_instruction
+        from eadip.agents.llm import (
+            PRODUCED_BY_FALLBACK,
+            PRODUCED_BY_LLM,
+            complete_json_traced,
+            log_fallback,
+            resolve_instruction,
+        )
 
         claims = [f.claim for f in findings]
         instruction = await resolve_instruction(self._instruction_provider, REFLECTION_INSTRUCTION)
-        prompt = f"{instruction}\nGoal: {goal.model_dump_json()}\nFindings: {claims}"
-        reflection = await complete_json(
+        goal_json = goal.model_dump_json(exclude={"produced_by", "fallback_reason"})
+        prompt = f"{instruction}\nGoal: {goal_json}\nFindings: {claims}"
+        reflection, reason = await complete_json_traced(
             self._client, prompt, model=self._model, validate=Reflection.model_validate
         )
         if reflection is None:
-            return await self._fallback.reflect(goal, findings, step_results)
-        return reflection
+            reason = reason or "no model output"
+            log_fallback("reflection", reason)
+            fallback = await self._fallback.reflect(goal, findings, step_results)
+            return fallback.model_copy(
+                update={"produced_by": PRODUCED_BY_FALLBACK, "fallback_reason": reason}
+            )
+        # Stamped after validation: a produced_by the model emitted is discarded.
+        return reflection.model_copy(
+            update={"produced_by": PRODUCED_BY_LLM, "fallback_reason": None}
+        )

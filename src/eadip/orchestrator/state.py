@@ -44,6 +44,10 @@ class RunState(BaseModel):
     # Phase 7 — verified output (durable in the checkpoint, i.e. run memory).
     verified_claims: list[VerifiedClaim] = Field(default_factory=list)
     brief: ExecutiveBrief | None = None
+    # table -> sha256 of the tenant rows verification read (Glass Box: the evidence
+    # bundle compares its served rows against this). Same server, so it detects
+    # later change, not a consistent lie.
+    snapshot_commitments: dict[str, str] = Field(default_factory=dict)
 
     # Phase 9 — governed autonomy. The approval ledger (durable in the checkpoint):
     # every gated action ever surfaced for this run, with its decision.

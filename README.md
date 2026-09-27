@@ -27,10 +27,12 @@ that job automatically, in minutes — and, crucially, it **shows its work**:
    ranks what drove the change ("Hardware costs in EMEA caused 96% of the
    decline"), spots anomalies, and attaches the *exact query* behind every
    number so anyone can check it.
-5. **It double-checks itself.** A separate verification step re-runs every
-   query and independently recomputes every figure. Numbers that check out are
-   marked *verified*; disagreements are flagged *conflicting* — never quietly
-   papered over.
+5. **It double-checks itself.** A verification step re-runs each figure's
+   recorded query on the warehouse and recomputes the number. Numbers whose
+   recomputed value matches are marked *verified*; disagreements are flagged
+   *conflicting* — never quietly papered over; numbers it could not recompute
+   stay *unverified*. (It checks that the number reproduces from its query —
+   not that the query was the right one to ask. See *What "verified" means*.)
 6. **It reports like an executive briefing.** A one-line headline, the key
    findings with confidence levels, recommended actions, stated assumptions and
    limitations, and a full drill-down for the skeptics.
@@ -39,8 +41,14 @@ that job automatically, in minutes — and, crucially, it **shows its work**:
    approval first. Reading is autonomous; changing anything requires a person.
 
 And everything — every answer, every permission check, every approval, every
-piece of removed personal data — is written to a tamper-evident **audit log**,
-so compliance teams can reconstruct exactly what happened and why.
+piece of removed personal data — is written to an append-only **audit log**,
+so compliance teams can reconstruct exactly what happened and why. The log is
+append-only (a Postgres trigger rejects UPDATE/DELETE) and, from migration 0009
+on, hash-chained per tenant, so `eadip-audit-verify` detects edited, deleted or
+reordered events. It is not proof against a database superuser or table owner
+who rewrites the whole chain or drops the newest events; detecting that
+requires anchoring the latest chain hash outside the database (e.g. a periodic
+signed export).
 
 ### Why is that hard?
 
@@ -48,7 +56,7 @@ Large language models (the AI behind chatbots) are great at sounding right and
 notoriously capable of being wrong. In an enterprise, "sounds right" is not
 good enough. EADIP's whole design answers one question: **how do you let an AI
 investigate real company data without ever having to just take its word for
-it?** The answers: independent verification of every number, provenance on
+it?** The answers: every number re-checked against its source query, provenance on
 every claim, humans approving every action, hard cost/time limits on every
 run, and strict walls between different companies' (tenants') data.
 
@@ -61,7 +69,7 @@ run, and strict walls between different companies' (tenants') data.
 | **Retrieval / RAG** | Searching the company's own documents so answers are grounded in real sources instead of the AI's imagination. |
 | **NL→SQL** | Turning a plain-English question into a database query — behind a safety gate that only permits read-only, tenant-scoped queries. |
 | **Orchestrator** | The "project manager" engine that plans an investigation, runs the steps, reflects on whether the evidence is sufficient, and re-plans if not. |
-| **Verification** | An independent re-computation of every number before it reaches the report. |
+| **Verification** | Re-running each number's query and recomputing the number before it reaches the report; unmatched numbers are flagged, not hidden. |
 | **Provenance** | The receipt attached to every claim: the exact query or document it came from. |
 | **MCP tools** | A standard way to plug other enterprise systems (ticketing, FX rates, CRMs…) into the AI — each behind its own permission checks. |
 | **Human-in-the-loop** | Any action with side effects pauses and waits for a person to approve, reject, or edit it. |
@@ -75,7 +83,9 @@ run, and strict walls between different companies' (tenants') data.
 Ask a question and watch the investigation happen as a live evidence graph:
 goal → plan steps → findings → sources → verified claims → recommendations.
 Click any number and **re-run its SQL in your own browser** (DuckDB-WASM over
-the tenant's rows, the same governed read path the verifier uses). Copy a
+the tenant's rows as the server supplies them). Each table in the evidence
+bundle carries a SHA-256 of its rows and the commitment recorded at
+verification time, so the browser flags rows that changed in between. Copy a
 **share link** and anyone can replay the run, no login. Drop a **CSV** and ask
 about it by name.
 
@@ -111,7 +121,7 @@ curl localhost:8000/v1/runs/<id>/report -H 'X-Roles: analyst'     # the verified
 
 # 4. Quality gates (the same ones CI enforces)
 make test lint type     # pytest + ruff + mypy
-make eval               # live eval: accuracy / verified-coverage / grounding
+make eval               # live eval: accuracy / checked-coverage / grounding
 make safety             # AI-safety suite: zero unapproved actions
 make reliability        # fault-injection suite: crash/resume, breakers, bounds
 
@@ -181,8 +191,10 @@ LangGraph-pattern engine — no framework dependency (see
 
 ### Verified reporting
 On completion, a Verification Agent re-runs each finding's source query and
-**independently recomputes** the number: matches are `verified`, disagreements
-`conflicting` (never silently reconciled), un-runnable ones `unverified`.
+recomputes the number: matches are `verified`, disagreements `conflicting`
+(never silently reconciled); claims that cannot be re-run, carry no magnitude,
+or whose value cannot be recomputed are `unverified`. Every claim records
+`value_checked` (did the label rest on a value comparison?).
 Claims carry calibrated confidence + provenance; recommendations are ranked by
 impact × confidence from verified, non-association claims only.
 `GET /v1/runs/{id}/report` returns the layered brief.
@@ -244,7 +256,7 @@ In-memory graph by default; Neo4j behind the same interface.
   (100 users) of the 200-per-cluster target — 0% errors, read-path p95 < 2 s.
   Building it caught and fixed a real bottleneck (analytics queries were
   serialized behind one lock; now MVCC-concurrent).
-- **Eval hard gate:** accuracy ≥ 92%, verified coverage ≥ 95%, grounding ≥ 95%
+- **Eval hard gate:** accuracy ≥ 92%, checked coverage ≥ 95% (analytics claims value-compared), grounding ≥ 95%
   (measured 100/100/100 on the alpha gold set) — CI fails below.
 - **Retention** (`eadip-retention`): expiry sweeps per data class; the audit
   trail is exempt by design. **Residency:** a tenant pinned to a region is
@@ -294,12 +306,64 @@ deploy/           helm/  k8s/ (KEDA, DR jobs)  docker/  terraform/  otel/
 docs/             adr/ (13 ADRs)  runbooks/  compliance/  security/
 ```
 
+### How the components connect
+
+```mermaid
+flowchart TD
+  user([Business user]) --> gw[API gateway<br/>gateway/app.py]
+  gw --> search[Search route<br/>gateway/routes/search.py]
+  gw --> runs[Run routes<br/>gateway/routes/runs.py]
+  gw --> share[Share + evidence bundle<br/>gateway/routes/share.py]
+  gw --> authz[Identity, RBAC, PDP<br/>security/]
+  search --> retr[Hybrid retrieval<br/>retrieval/service.py]
+  runs --> orch[Run orchestrator<br/>orchestrator/service.py]
+  orch --> agents[Interpreter, planner, reflection<br/>agents/]
+  orch --> exec[Step executors<br/>orchestrator/executors.py]
+  orch --> cp[(Run checkpoints<br/>orchestrator/checkpoint.py)]
+  orch --> appr[Human approval<br/>approval/service.py]
+  exec --> retr
+  exec --> ana[Governed analytics<br/>analytics/service.py]
+  exec --> mcp[MCP tools<br/>mcp/]
+  retr --> vec[(Vector store<br/>adapters/qdrant_store.py)]
+  retr --> gr[GraphRAG<br/>graph/service.py]
+  ana --> gate[SQL safety gate<br/>analytics/sql_validator.py]
+  ana --> wh[(Analytics warehouse<br/>adapters/duckdb_warehouse.py)]
+  orch --> ver[Verification + brief<br/>verification/service.py]
+  ver -- re-runs the claim's SQL on the SAME warehouse --> wh
+  ver --> gate
+  share --> bundle[Evidence bundle + row hashes<br/>verification/bundle.py]
+  bundle --> wh
+  bundle --> browser[Browser re-check<br/>web/src/lib/duck.ts]
+  agents -. completions .-> llm{{LLM provider<br/>adapters/litellm_client.py}}
+  ana -. NL-to-SQL when sql_generator_backend=llm .-> llm
+  ver -. recommendations .-> llm
+  ing[Ingestion pipeline<br/>ingestion/pipeline.py] --> vec
+  gw --> audit[(Audit log, hash-chained<br/>security/audit.py)]
+  ing --> audit
+  appr --> audit
+  approver([Approver]) --> appr
+```
+
+### What "verified" means (and does not)
+
+The verifier shares the producing path: it re-runs the claim's own SQL on the
+same warehouse and reuses the same statistics code, so a label of `verified`
+means *this number reproduces from this query*, not *this query answers the
+question*. A query with the wrong filter, period or metric reproduces its own
+wrong number. Retrieval and tool claims are grounded by a source pointer, not
+re-derived (`value_checked = false`). The browser re-check runs over rows the
+server supplies; the row hashes detect change between verification and
+sharing, but a commitment only protects against a dishonest server if it is
+published through a channel that server does not control. Agents record
+`produced_by` (`llm`, `heuristic`, or `heuristic_fallback` with a reason), and
+every analytics claim records which SQL generator produced it.
+
 **Stack:** Python 3.13+, FastAPI, Pydantic v2, `uv`; sqlglot (SQL safety gate);
 DuckDB/Postgres warehouses; Qdrant vectors; Neo4j graph; Redis cache; LiteLLM
 model seam; structlog + OpenTelemetry; pytest/ruff/mypy/bandit.
 
 **CLIs:** `eadip-eval`, `eadip-safety`, `eadip-reliability`, `eadip-load`,
-`eadip-retention`, `eadip-migrate`, `eadip-ingest`.
+`eadip-retention`, `eadip-migrate`, `eadip-ingest`, `eadip-audit-verify`.
 
 **UI:** `web/` (Vite + React + TypeScript, d3-force, DuckDB-WASM) → built into
 `src/eadip/gateway/static/app` and served at `/app`.
@@ -313,7 +377,7 @@ model seam; structlog + OpenTelemetry; pytest/ruff/mypy/bandit.
 | ruff + mypy | style + static type safety (167 source files) |
 | pytest | 407 unit/integration tests (RLS + vector isolation run against real services in CI) |
 | tsc + vitest | the Glass Box UI: types, live-graph reducer, SSE parser, browser recompute |
-| `eadip-eval` | live pipeline accuracy ≥ 92%, verified coverage ≥ 95%, grounding ≥ 95% |
+| `eadip-eval` | live pipeline accuracy ≥ 92%, checked coverage ≥ 95% (analytics claims value-compared), grounding ≥ 95% |
 | `eadip-safety` | six AI-safety bounds, zero unapproved actions |
 | `eadip-reliability` | six fault-injection scenarios (crash/resume, breakers, degradation, bounds) |
 | `eadip-load` | concurrency target at 0% errors, read-path p95 < 2 s |

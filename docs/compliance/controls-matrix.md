@@ -17,7 +17,7 @@ How EADIP's implemented controls map onto the frameworks the verticals require.
 | Data retention windows per artifact class, scheduled sweep (`eadip-retention`, retention CronJob) | CC6.5 | Art. 5(1)(e) | A.8.10 | — | code |
 | Data residency: per-tenant region pin, 451 on cross-region serving (`platform/residency.py`, data-plane guard) | — | Ch. V (transfers) | A.5.14 | — | code |
 | Human approval gate on every write/high-impact action; approver-authority execution (Phase 9, safety suite: 0 unapproved) | CC5.1 | — | A.5.3 (segregation) | Art. 14 (human oversight) | code |
-| Verification of every surfaced claim; ungrounded claims suppressed; conflicts flagged never reconciled (Phase 7; eval gate: coverage/grounding ≥95%) | — | — | — | Art. 13, 15 (accuracy/transparency) | code |
+| Verification of every surfaced claim; ungrounded claims suppressed; conflicts flagged never reconciled (Phase 7; eval gate: checked coverage — analytics claims whose label rested on a value comparison — and grounding ≥95%; see ADR-0013 amendment) | — | — | — | Art. 13, 15 (accuracy/transparency) | code |
 | Prompt governance: immutable versions, eval-gated promotion, rollback, full audit (Phase 11) | CC8.1 (change mgmt) | — | A.8.32 | Art. 15 | code |
 | Model routing pins + per-tenant budgets + per-run cost bounds (Phases 6/11) | CC5.2 | — | — | Art. 15 | code |
 | Rate limiting + backpressure + circuit breakers + graceful degradation (fault-injection-proven, `eadip-reliability`) | A1.1 | — | A.8.6 | — | code |
