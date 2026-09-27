@@ -2,10 +2,18 @@
 // run every claim's provenance SQL locally, and re-derive the number with the
 // ported recompute logic. The wasm (~34 MB raw, precompressed at build time)
 // is fetched lazily, only when a reader asks to verify.
+//
+// The rows come from the same server that made the claims, so this re-checks
+// arithmetic over server-supplied rows. Before re-running, each table's rows are
+// hashed here (lib/commitment.ts) and compared with the hash the bundle states
+// and with the snapshot committed at verification time; a mismatch marks every
+// claim on that table 'tampered'. The commitment also comes from the server: it
+// catches rows changing after verification, not a server lying consistently.
 import type { BundleClaim, BundleTable, EvidenceBundle } from './types'
 import { close, recomputeMagnitude, type Table } from './recompute'
+import { commitRows } from './commitment'
 
-export type Verdict = 'verified' | 'conflict' | 'sampled' | 'cannot_run' | 'no_magnitude'
+export type Verdict = 'verified' | 'conflict' | 'sampled' | 'cannot_run' | 'no_magnitude' | 'tampered'
 export type VerifyResult = {
   index: number
   verdict: Verdict
@@ -85,12 +93,28 @@ export async function verifyClaim(d: Db, claim: BundleClaim, bundle: EvidenceBun
   }
 }
 
+/** Tables whose served rows do not hash to the stated sha256, or to the snapshot
+ * committed at verification (when one was recorded), with the reason. */
+export async function tamperedTables(bundle: EvidenceBundle): Promise<Map<string, string>> {
+  const bad = new Map<string, string>()
+  for (const t of bundle.tables) {
+    const h = await commitRows(t.rows)
+    const committed = bundle.snapshot_commitments?.[t.name]
+    if (h !== t.sha256) bad.set(t.name, `rows hash ${h.slice(0, 12)}… ≠ stated ${String(t.sha256).slice(0, 12)}…`)
+    else if (committed && h !== committed)
+      bad.set(t.name, `rows hash ${h.slice(0, 12)}… ≠ committed at verification ${committed.slice(0, 12)}…`)
+  }
+  return bad
+}
+
 /** Load the bundle into the browser database and verify every claim. */
 export async function verifyBundle(
   bundle: EvidenceBundle,
   onProgress?: (msg: string) => void,
   onResult?: (r: VerifyResult) => void,
 ): Promise<VerifyResult[]> {
+  onProgress?.('hashing rows against the verification snapshot…')
+  const tampered = await tamperedTables(bundle)
   const d = await openDb(onProgress)
   for (const t of bundle.tables) {
     onProgress?.(`loading ${t.name} (${t.row_count} rows)…`)
@@ -98,6 +122,13 @@ export async function verifyBundle(
   }
   const out: VerifyResult[] = []
   for (const c of bundle.claims) {
+    const hit = c.tables.find((name) => tampered.has(name))
+    if (hit) {
+      const r: VerifyResult = { index: c.index, verdict: 'tampered', browserValue: null, claimed: c.claimed_magnitude, rows: 0, error: `${hit}: ${tampered.get(hit)}`, ms: 0 }
+      out.push(r)
+      onResult?.(r)
+      continue
+    }
     onProgress?.(`re-running claim ${c.index}…`)
     const r = await verifyClaim(d, c, bundle)
     out.push(r)

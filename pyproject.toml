@@ -72,6 +72,7 @@ eadip-reliability = "eadip.eval.reliability:main"
 eadip-load = "eadip.eval.load:main"
 eadip-retention = "eadip.platform.retention:main"
 eadip-migrate = "eadip.adapters.migrations:main"
+eadip-audit-verify = "eadip.adapters.audit_verify:main"
 eadip-ingest = "eadip.ingestion.cli:main"
 
 [tool.hatch.build.targets.wheel]

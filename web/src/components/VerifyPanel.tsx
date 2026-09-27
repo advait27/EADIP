@@ -9,6 +9,7 @@ const LABEL: Record<VerifyResult['verdict'], string> = {
   sampled: 'sampled rows · cannot verify',
   cannot_run: 'cannot run',
   no_magnitude: 'reproduced · no number to compare',
+  tampered: 'rows differ from the snapshot committed at verification',
 }
 
 export function VerifyPanel({
@@ -46,8 +47,10 @@ export function VerifyPanel({
     <div className="card verify">
       <h3>Verify it yourself</h3>
       <p className="small muted" style={{ margin: '0 0 8px' }}>
-        Your browser downloads the tenant's rows and re-runs every claim's SQL in DuckDB-WASM. The
-        number is re-derived here, not trusted from the server.
+        Your browser downloads the tenant's rows and re-runs every claim's SQL in DuckDB-WASM, so the
+        arithmetic is re-checked here. The rows themselves come from the same server: their hash is
+        compared with the snapshot committed when the run was verified, which catches rows changing
+        since then, but not a server that supplied wrong rows from the start.
       </p>
       <div className="row">
         <button className="primary" onClick={run} disabled={busy}>
@@ -61,6 +64,11 @@ export function VerifyPanel({
       </div>
       <div className="progress">{progress}</div>
       {error && <div className="error small">{error}</div>}
+      {results.some((r) => r.verdict === 'tampered') && (
+        <div className="small" style={{ color: 'var(--bad)' }}>
+          Some rows differ from the snapshot committed at verification; those claims were not re-run.
+        </div>
+      )}
       {bundle && bundle.tables.some((t) => t.truncated) && (
         <div className="small" style={{ color: 'var(--warn)' }}>
           A table hit the row cap ({bundle.row_cap}); those claims are marked sampled.

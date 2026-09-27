@@ -57,11 +57,24 @@ in their own browser, and makes any run shareable as a one-link replay.
    orchestration semantics are needed for the visible part.
 2. Decoupling run execution from the SSE request is a prerequisite for any UI
    (reconnects, refresh, share) and for multi-replica deployment.
-3. Client-side re-execution of provenance SQL over a tenant-scoped row bundle is a
-   legitimate independent verification because the bundle rows are fetched with SQL
+3. Client-side re-execution of provenance SQL over a tenant-scoped row bundle is an
+   independent re-check of the *arithmetic* over rows the server supplied, not an
+   independent verification of the data. The bundle rows are fetched with SQL
    rendered by `TemplateSqlGenerator.render` and passed through `SqlSafetyValidator`
-   before `warehouse.execute`, the same governed read path the server's own
-   recompute uses.
+   before `warehouse.execute` (the same governed read path the server's own
+   recompute uses), so they are the rows the server would verify against, but a
+   reader still has to trust the server for them. (Corrected 2026-09-27; the
+   original wording called this "a legitimate independent verification".)
+   Snapshot commitment: at verification time the verifier hashes each touched
+   table's rows in a canonical form (`verification/commitment.py`, mirrored in
+   `web/src/lib/commitment.ts`) and records the hashes on the run
+   (`RunState.snapshot_commitments`, also in the `verification.summary` event). The
+   bundle states each table's `sha256` and the recorded commitments; the browser
+   re-hashes the rows and marks claims on a mismatching table `tampered`. Limit:
+   this detects rows that changed between verification and sharing, and lets a
+   reader compare against a commitment obtained through another channel. It does
+   not protect against a server that lies consistently at verification time,
+   because the commitment comes from the same server as the rows.
 4. The demo dataset is fine for the first cut; CSV upload is the last item because it
    touches analytics interpretation the most, and it is DuckDB-only in this cut.
 

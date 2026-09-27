@@ -6,9 +6,18 @@ executive brief. Phase 12 makes it a **hard gate** (PRD §13-14, TAD Ch 12):
 non-zero exit — failing CI — unless
 
   - accuracy          >= 92%  (gold-set pass rate)
-  - verified coverage >= 95%  (claims that went through a real verification
-                               method, not surfaced unchecked)
-  - grounding         >= 95%  (verified claims carrying provenance)
+  - checked coverage  >= 95%  (ANALYTICS claims whose label rested on comparing
+                               a recomputed value with the claimed one —
+                               ``value_checked``; a reproduced query with no
+                               comparison does not count)
+  - grounding         >= 95%  (verified claims carrying a provenance pointer —
+                               a provenance check, not a correctness check)
+
+Retrieval and tool claims are verified on their source pointer, not
+value-checked; they are reported as a separate count ("grounded by pointer")
+and are not part of checked coverage. "Checked" means the recorded SQL was
+re-run on the same warehouse and the number recomputed — reproducibility and
+arithmetic, not that the query answers the question.
 
 Deterministic and offline (heuristic agents, in-memory stores, in-process
 DuckDB). Requires the `data` extra (DuckDB).
@@ -34,7 +43,7 @@ from eadip.orchestrator.state import RunState
 from eadip.retrieval.factory import build_retrieval_service
 from eadip.security.policy import PolicyDecisionPoint
 from eadip.security.rbac import default_catalog
-from eadip.verification.models import VerificationStatus
+from eadip.verification.models import VerificationStatus, VerifiedClaim
 
 
 @dataclass
@@ -43,19 +52,36 @@ class VerificationStats:
 
     total_claims: int = 0
     verified: int = 0
-    with_method: int = 0  # went through a real verification method (not "none")
+    analytics_claims: int = 0
+    value_checked: int = 0  # analytics claims labelled on a value comparison
+    pointer_grounded: int = 0  # retrieval/tool claims VERIFIED on a source pointer
     verified_with_provenance: int = 0
     briefs: int = 0
     briefs_missing: int = 0
 
+    def add(self, claim: VerifiedClaim) -> None:
+        self.total_claims += 1
+        if claim.source == "analytics":
+            self.analytics_claims += 1
+            if claim.value_checked:
+                self.value_checked += 1
+        elif claim.status is VerificationStatus.VERIFIED:
+            self.pointer_grounded += 1
+        if claim.status is VerificationStatus.VERIFIED:
+            self.verified += 1
+            if claim.provenance:
+                self.verified_with_provenance += 1
+
     @property
     def coverage(self) -> float:
-        """Share of claims that were actually checked (method != none)."""
-        return self.with_method / self.total_claims if self.total_claims else 0.0
+        """Checked coverage: share of ANALYTICS claims whose label rested on a
+        comparison of a recomputed value with the claimed one."""
+        return self.value_checked / self.analytics_claims if self.analytics_claims else 0.0
 
     @property
     def grounding(self) -> float:
-        """Share of VERIFIED claims that carry provenance."""
+        """Share of VERIFIED claims that carry provenance (a provenance check:
+        a pointer exists, not that the claim is correct)."""
         return self.verified_with_provenance / self.verified if self.verified else 0.0
 
 
@@ -89,13 +115,7 @@ async def _investigate(question: str, collector: _Collector) -> str:
 
     stats = collector.stats
     for claim in state.verified_claims:
-        stats.total_claims += 1
-        if claim.method != "none":
-            stats.with_method += 1
-        if claim.status is VerificationStatus.VERIFIED:
-            stats.verified += 1
-            if claim.provenance:
-                stats.verified_with_provenance += 1
+        stats.add(claim)
 
     brief = state.brief
     if brief is None:
@@ -124,15 +144,17 @@ async def _main(min_accuracy: float, min_coverage: float, min_grounding: float) 
         f"mean score {report.mean_score:.2f} (pass rate {report.pass_rate:.0%})"
     )
     print(
-        f"  verification: {stats.total_claims} claims — coverage {stats.coverage:.0%} "
-        f"(checked by a real method), grounding {stats.grounding:.0%} "
-        f"(verified claims with provenance), briefs {stats.briefs}/{report.total}"
+        f"  verification: {stats.total_claims} claims — checked coverage {stats.coverage:.0%} "
+        f"({stats.value_checked}/{stats.analytics_claims} analytics claims value-compared), "
+        f"{stats.pointer_grounded} retrieval/tool claims grounded by pointer (not value-checked), "
+        f"grounding {stats.grounding:.0%} (verified claims with a provenance pointer), "
+        f"briefs {stats.briefs}/{report.total}"
     )
     breaches: list[str] = []
     if report.pass_rate < min_accuracy:
         breaches.append(f"accuracy {report.pass_rate:.0%} < {min_accuracy:.0%}")
     if stats.coverage < min_coverage:
-        breaches.append(f"verified coverage {stats.coverage:.0%} < {min_coverage:.0%}")
+        breaches.append(f"checked coverage {stats.coverage:.0%} < {min_coverage:.0%}")
     if stats.grounding < min_grounding:
         breaches.append(f"grounding {stats.grounding:.0%} < {min_grounding:.0%}")
     if breaches:
@@ -140,7 +162,7 @@ async def _main(min_accuracy: float, min_coverage: float, min_grounding: float) 
             print(f"  GATE BREACH: {b}")
         return 1
     print(
-        f"  GATE PASS: accuracy >= {min_accuracy:.0%}, coverage >= {min_coverage:.0%}, "
+        f"  GATE PASS: accuracy >= {min_accuracy:.0%}, checked coverage >= {min_coverage:.0%}, "
         f"grounding >= {min_grounding:.0%}"
     )
     return 0
@@ -148,9 +170,23 @@ async def _main(min_accuracy: float, min_coverage: float, min_grounding: float) 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="EADIP eval hard gate (PRD §13-14)")
-    parser.add_argument("--min-accuracy", type=float, default=0.92)
-    parser.add_argument("--min-coverage", type=float, default=0.95)
-    parser.add_argument("--min-grounding", type=float, default=0.95)
+    parser.add_argument(
+        "--min-accuracy", type=float, default=0.92, help="minimum gold-set pass rate"
+    )
+    parser.add_argument(
+        "--min-coverage",
+        type=float,
+        default=0.95,
+        help="minimum checked coverage: share of analytics claims whose label rested on "
+        "comparing a recomputed value with the claimed one",
+    )
+    parser.add_argument(
+        "--min-grounding",
+        type=float,
+        default=0.95,
+        help="minimum share of verified claims carrying a provenance pointer "
+        "(a provenance check, not a correctness check)",
+    )
     args = parser.parse_args()
     raise SystemExit(asyncio.run(_main(args.min_accuracy, args.min_coverage, args.min_grounding)))
 

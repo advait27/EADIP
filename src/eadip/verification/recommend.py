@@ -94,7 +94,22 @@ class LLMRecommender:
         self._fallback = HeuristicRecommender(max_recommendations)
 
     async def recommend(self, objective: str, claims: list[VerifiedClaim]) -> list[Recommendation]:
-        from eadip.agents.llm import complete_json
+        from eadip.agents.llm import (
+            PRODUCED_BY_FALLBACK,
+            PRODUCED_BY_LLM,
+            complete_json_traced,
+            log_fallback,
+        )
+
+        async def fall_back(reason: str) -> list[Recommendation]:
+            log_fallback("recommender", reason)
+            recs = await self._fallback.recommend(objective, claims)
+            return [
+                r.model_copy(
+                    update={"produced_by": PRODUCED_BY_FALLBACK, "fallback_reason": reason}
+                )
+                for r in recs
+            ]
 
         eligible = {
             c.claim: c
@@ -102,7 +117,7 @@ class LLMRecommender:
             if c.status == VerificationStatus.VERIFIED and not c.association_only
         }
         if not eligible:
-            return await self._fallback.recommend(objective, claims)
+            return await fall_back("no verified non-association claims to act on")
         prompt = (
             f"{RECOMMENDER_INSTRUCTION}\nObjective: {objective}\nVerified claims: {list(eligible)}"
         )
@@ -131,5 +146,13 @@ class LLMRecommender:
                 raise ValueError("no recommendation cites a verified claim")
             return out[: self._max]
 
-        recs = await complete_json(self._client, prompt, model=self._model, validate=validate)
-        return recs if recs is not None else await self._fallback.recommend(objective, claims)
+        recs, reason = await complete_json_traced(
+            self._client, prompt, model=self._model, validate=validate
+        )
+        if recs is None:
+            return await fall_back(reason or "no model output")
+        # Stamped after validation: a produced_by the model emitted is discarded.
+        return [
+            r.model_copy(update={"produced_by": PRODUCED_BY_LLM, "fallback_reason": None})
+            for r in recs
+        ]

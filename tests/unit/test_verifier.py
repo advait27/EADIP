@@ -1,5 +1,6 @@
 """VerificationService: re-execute source query + recompute → verified /
-conflicting / unverified (never silently reconciled), plus corroboration."""
+conflicting / unverified (never silently reconciled), plus corroboration, the
+``value_checked`` label, and the snapshot commitment."""
 
 from __future__ import annotations
 
@@ -8,6 +9,7 @@ from uuid import UUID
 from eadip.adapters.demo_finance import FINANCE_SCHEMA
 from eadip.orchestrator.models import Evidence, Finding
 from eadip.ports.warehouse import QueryResult, WarehouseError, WarehouseSchema, query_result
+from eadip.verification.commitment import commit_rows
 from eadip.verification.models import VerificationStatus
 from eadip.verification.verifier import VerificationService
 
@@ -23,6 +25,7 @@ class FakeWarehouse:
     def __init__(self, result: QueryResult | None = None, error: bool = False) -> None:
         self._result = result
         self._error = error
+        self.executed: list[str] = []
 
     async def schema(self, tenant_id: UUID) -> WarehouseSchema:
         return FINANCE_SCHEMA
@@ -30,6 +33,7 @@ class FakeWarehouse:
     async def execute(
         self, tenant_id: UUID, sql: str, *, row_cap: int, timeout_s: float
     ) -> QueryResult:
+        self.executed.append(sql)
         if self._error:
             raise WarehouseError("boom")
         assert self._result is not None
@@ -60,6 +64,7 @@ async def test_verified_when_recomputation_matches() -> None:
     assert claim.status == VerificationStatus.VERIFIED
     assert claim.method == "recompute"
     assert claim.recomputed_magnitude == -220.0
+    assert claim.value_checked is True
 
 
 async def test_conflicting_when_recomputation_disagrees() -> None:
@@ -69,12 +74,16 @@ async def test_conflicting_when_recomputation_disagrees() -> None:
     assert report.conflicting == 1
     assert report.claims[0].status == VerificationStatus.CONFLICTING
     assert "re-derived" in report.claims[0].note  # not silently reconciled
+    assert report.claims[0].value_checked is True
 
 
 async def test_unverified_when_query_cannot_be_reexecuted() -> None:
     svc = VerificationService(warehouse=FakeWarehouse(error=True))
     report = await svc.verify([_driver_finding(-220.0)], tenant_id=T)
     assert report.claims[0].status == VerificationStatus.UNVERIFIED
+    assert report.claims[0].value_checked is False
+    assert report.snapshot_commitments == {}  # row fetch failed too: nothing committed
+    assert report.snapshot_notes and "not committed" in report.snapshot_notes[0]
 
 
 async def test_unverified_when_sql_fails_fresh_revalidation() -> None:
@@ -106,3 +115,64 @@ async def test_retrieval_corroboration_raises_confidence() -> None:
     analytics_claim = next(c for c in report.claims if c.source == "analytics")
     assert analytics_claim.corroborating_sources >= 1
     assert analytics_claim.confidence > 0.7  # base verified + corroboration boost
+
+
+async def test_reproduced_but_not_recomputable_is_unverified() -> None:
+    # R2: the query re-runs, but a driver with no member cannot be recomputed —
+    # reproducing a query is not the same as checking its number.
+    finding = _driver_finding(-220.0)
+    finding.detail = {}
+    svc = VerificationService(warehouse=FakeWarehouse(_FRESH))
+    claim = (await svc.verify([finding], tenant_id=T)).claims[0]
+    assert claim.status == VerificationStatus.UNVERIFIED
+    assert claim.method == "requery"
+    assert claim.value_checked is False
+    assert claim.recomputed_magnitude is None
+    assert "not independently recomputed" in claim.note
+
+
+async def test_no_claimed_magnitude_is_unverified() -> None:
+    # R3: a recomputed value with nothing to compare it to is not a verification.
+    finding = _driver_finding(-220.0)
+    finding.magnitude = None
+    svc = VerificationService(warehouse=FakeWarehouse(_FRESH))
+    claim = (await svc.verify([finding], tenant_id=T)).claims[0]
+    assert claim.status == VerificationStatus.UNVERIFIED
+    assert claim.method == "recompute"
+    assert claim.recomputed_magnitude == -220.0
+    assert claim.value_checked is False
+    assert "no magnitude" in claim.note
+
+
+async def test_retrieval_and_tool_claims_are_not_value_checked() -> None:
+    passage = Finding(
+        claim="memo",
+        source="retrieval",
+        kind="passage",
+        evidence=[Evidence(kind="passage", ref="doc://memo")],
+    )
+    tool = Finding(
+        claim="fx rate", source="tool", kind="tool", evidence=[Evidence(kind="tool", ref="fx.rate")]
+    )
+    svc = VerificationService(warehouse=FakeWarehouse(_FRESH))
+    report = await svc.verify([passage, tool], tenant_id=T)
+    assert [c.status for c in report.claims] == [VerificationStatus.VERIFIED] * 2
+    assert not any(c.value_checked for c in report.claims)
+
+
+async def test_snapshot_commitment_recorded_for_touched_tables() -> None:
+    wh = FakeWarehouse(_FRESH)
+    report = await VerificationService(warehouse=wh).verify([_driver_finding(-220.0)], tenant_id=T)
+    assert report.snapshot_commitments == {"finance_metrics": commit_rows(_FRESH.rows)}
+    # The snapshot fetch is the bundle's plain projection: tenant-scoped, no GROUP BY.
+    fetch = wh.executed[-1]
+    assert "GROUP BY" not in fetch and f"tenant_id = '{T}'" in fetch
+
+
+async def test_truncated_snapshot_is_not_committed() -> None:
+    capped = QueryResult(columns=_FRESH.columns, rows=_FRESH.rows, truncated=True)
+    report = await VerificationService(warehouse=FakeWarehouse(capped)).verify(
+        [_driver_finding(-220.0)], tenant_id=T
+    )
+    assert report.snapshot_commitments == {}
+    assert any("row cap" in n for n in report.snapshot_notes)

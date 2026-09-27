@@ -7,6 +7,8 @@ unverified claims are surfaced, never hidden.
 from __future__ import annotations
 
 from eadip.verification.models import (
+    NOTE_NO_MAGNITUDE,
+    NOTE_NOT_RECOMPUTED,
     ExecutiveBrief,
     Recommendation,
     VerificationReport,
@@ -39,7 +41,7 @@ def build_executive_brief(
 
     # Exec layer: analytics + governed-tool claims ranked by confidence (raw
     # grounding passages stay in drill-down; tool results are external data the
-    # brief should surface). Analytics is preferred on ties (it is re-derived).
+    # brief should surface). Analytics is preferred on ties (it is recomputed).
     _source_rank = {"analytics": 1, "tool": 0}
     key_findings = sorted(
         (c for c in report.claims if c.source in ("analytics", "tool")),
@@ -48,8 +50,15 @@ def build_executive_brief(
     )[:6]
 
     assumptions = [
-        "Every figure was independently re-derived from its source query at verification time.",
+        "Verification re-ran each figure's recorded query on the same warehouse and "
+        "recomputed the number from the fresh rows. This checks reproducibility and "
+        "arithmetic, not whether the query answers the question.",
     ]
+    if any(c.source in ("retrieval", "tool") for c in report.claims):
+        assumptions.append(
+            "Retrieval and tool claims are grounded by their source pointer; their "
+            "content is not re-derived."
+        )
     if any(c.association_only for c in report.claims):
         assumptions.append("Correlations are reported as associations, not causal relationships.")
 
@@ -60,6 +69,8 @@ def build_executive_brief(
         for c in report.claims
         if c.status == VerificationStatus.UNVERIFIED and c.source == "analytics"
     ]
+    # Reproduced but not value-checked: the query re-ran, but no comparison was made.
+    reproduced_only = [c for c in unverified if c.note in (NOTE_NOT_RECOMPUTED, NOTE_NO_MAGNITUDE)]
     if conflicting:
         limitations.append(
             f"{len(conflicting)} claim(s) disagreed on re-derivation and are flagged conflicting "
@@ -67,7 +78,14 @@ def build_executive_brief(
         )
     if unverified:
         limitations.append(
-            f"{len(unverified)} analytics claim(s) could not be independently re-derived."
+            f"{len(unverified)} analytics claim(s) are unverified: their number was not "
+            "checked against a recomputed value."
+        )
+    if reproduced_only:
+        limitations.append(
+            f"{len(reproduced_only)} of those re-ran successfully, but the number could not be "
+            "recomputed from the result or the claim had no number to compare; "
+            "reproducing a query does not confirm its figure."
         )
     for c in report.claims:
         if c.association_only and c.status == VerificationStatus.VERIFIED:

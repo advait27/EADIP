@@ -130,7 +130,8 @@ async def test_end_to_end_verified_brief_matches_recomputation() -> None:
 
     assert state.brief is not None
     assert "EMEA" in state.brief.headline
-    # Every claim was independently re-derived and matched (no conflicts).
+    # Every claim matched on verification (no conflicts); for analytics claims that
+    # means the recorded query was re-run and the number recomputed and compared.
     assert state.verified_claims
     assert all(c.status == VerificationStatus.VERIFIED for c in state.verified_claims)
     headline = next(c for c in state.verified_claims if c.kind == "headline")

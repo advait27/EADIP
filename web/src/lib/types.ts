@@ -88,6 +88,8 @@ export type BundleTable = {
   rows: unknown[][]
   row_count: number
   truncated: boolean
+  sha256: string // canonical hash of `rows` as served (lib/commitment.ts)
+  matches_commitment: boolean | null // server's own comparison; null = none recorded
 }
 export type BundleClaim = {
   index: number
@@ -107,6 +109,7 @@ export type EvidenceBundle = {
   claims: BundleClaim[]
   tables: BundleTable[]
   skipped: { index: number; reason: string }[]
+  snapshot_commitments: Record<string, string> // table → sha256 recorded at verification
 }
 
 export type Timeline = { run_id: string; question: string; status: string; events: LoggedEvent[] }

@@ -104,11 +104,19 @@ class AnalyticsExecutor:
             )
         )
         findings: list[Finding] = []
-        driver_sql = next((q.sql for q in result.queries if q.purpose == "drivers"), None)
+        driver_query = next((q for q in result.queries if q.purpose == "drivers"), None)
+        driver_sql = driver_query.sql if driver_query is not None else None
         total = result.total if result.total is not None else sum(d.delta for d in result.drivers)
         # Column roles travel with every finding so re-derivation (server-side
         # verifier, browser verify panel) never has to guess the time axis.
-        roles = {"period_column": result.period_column, "dimension": result.dimension}
+        # The SQL generator backend ("template" | "llm") rides along too, so a
+        # trace shows whether a model wrote the query behind each number.
+        source_query = driver_query or (result.queries[0] if result.queries else None)
+        roles = {
+            "period_column": result.period_column,
+            "dimension": result.dimension,
+            "sql_generator": source_query.generator if source_query is not None else None,
+        }
         has_headline = any(f.kind == "headline" for f in result.findings)
         if result.verified and driver_sql and not has_headline:
             findings.append(

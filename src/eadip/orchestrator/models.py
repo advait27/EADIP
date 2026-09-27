@@ -20,6 +20,10 @@ class Goal(BaseModel):
     entities: list[str] = Field(default_factory=list)  # regions/segments/products
     time_range: str | None = None
     complexity: str = "standard"  # "simple" | "standard" | "deep"
+    # Provenance (never taken from model JSON — stamped after validation):
+    # "llm" | "heuristic" | "heuristic_fallback" (an LLM agent fell back).
+    produced_by: str = "heuristic"
+    fallback_reason: str | None = None
 
 
 class PlanStep(BaseModel):
@@ -34,6 +38,11 @@ class PlanStep(BaseModel):
 class Plan(BaseModel):
     steps: list[PlanStep] = Field(default_factory=list)
     rationale: str = ""
+    # Provenance (never taken from model JSON — stamped after validation):
+    # "llm" | "heuristic" | "heuristic_fallback" (an LLM agent fell back)
+    # | "memory" (an episodic plan replayed).
+    produced_by: str = "heuristic"
+    fallback_reason: str | None = None
 
     def signature(self) -> str:
         """A stable text signature of the plan, used for loop detection."""
@@ -78,6 +87,10 @@ class Reflection(BaseModel):
     gaps: list[str] = Field(default_factory=list)
     should_replan: bool = False
     rationale: str = ""
+    # Provenance (never taken from model JSON — stamped after validation):
+    # "llm" | "heuristic" | "heuristic_fallback" (an LLM agent fell back).
+    produced_by: str = "heuristic"
+    fallback_reason: str | None = None
 
 
 class Event(BaseModel):

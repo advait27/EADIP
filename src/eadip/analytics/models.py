@@ -57,6 +57,7 @@ class SqlArtifact:
     row_count: int
     truncated: bool = False
     attempts: int = 1  # how many generations it took (>1 => repaired)
+    generator: str = "unknown"  # which SqlGenerator wrote it: "template" | "llm"
 
 
 @dataclass(frozen=True)

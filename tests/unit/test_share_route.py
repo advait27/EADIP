@@ -63,6 +63,9 @@ def test_share_link_replays_without_identity(client: TestClient) -> None:
 
     bundle = client.get(body["evidence_bundle_url"]).json()
     assert bundle["claims"] and bundle["tables"][0]["name"] == "finance_metrics"
+    # The served rows hash to the snapshot committed when the run was verified.
+    assert bundle["snapshot_commitments"]["finance_metrics"] == bundle["tables"][0]["sha256"]
+    assert bundle["tables"][0]["matches_commitment"] is True
 
     actions = [e.action for e in audit.events[before:]]
     assert "run.share.create" in actions
